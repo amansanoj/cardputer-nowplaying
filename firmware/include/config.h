@@ -61,6 +61,7 @@
 // Strict Minimalist Color Palette (Pure pitch-black & crisp white)
 #define COLOR_BG 0x0000     // Pure Pitch-Black (#000000)
 #define COLOR_TEXT 0xFFFF   // Crisp White (#FFFFFF)
+#define COLOR_MUTED 0x8410  // Subtle Muted Gray (#808080)
 #define COLOR_BAR_BG 0x3186 // Subtle dark gray track (#333333)
 
 // =====================================================================

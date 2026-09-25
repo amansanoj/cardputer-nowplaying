@@ -6,7 +6,7 @@
 
 DisplayUI::DisplayUI()
     : tft(TFT_CS, TFT_DC, TFT_RST), canvas(SCREEN_WIDTH, SCREEN_HEIGHT),
-      hasArtwork(false) {
+      hasArtwork(false), lastTrackTitle(""), lastTrackArtist(""), trackStartTime(0) {
   memset(artworkBuffer, 0, sizeof(artworkBuffer));
 }
 
@@ -59,17 +59,95 @@ String DisplayUI::formatTime(uint32_t totalSeconds) {
   return String(buf);
 }
 
-void DisplayUI::drawTruncatedText(int16_t x, int16_t y, const String &text,
-                                  int maxChars, uint8_t size) {
-  canvas.setCursor(x, y);
-  canvas.setTextSize(size);
-  canvas.setTextColor(COLOR_TEXT);
+int16_t DisplayUI::calculateScrollOffset(const String &text, int16_t maxW, unsigned long now) {
+  int16_t textW = text.length() * 6;
+  if (textW <= maxW) {
+    return 0; // Text fits inside column, no scrolling needed
+  }
 
-  if ((int)text.length() <= maxChars) {
+  int16_t overflow = textW - maxW;
+
+  // Normal app marquee timing (Pause -> Smooth Scroll -> Pause -> Smooth Return)
+  const unsigned long PAUSE_START = 2200; // Hold at start for 2.2s so user can read
+  const unsigned long SCROLL_SPEED = 50;  // 50ms per pixel (20 px/sec smooth scroll)
+  const unsigned long PAUSE_END = 2000;   // Hold at end for 2.0s so user can read conclusion
+  const unsigned long RETURN_SPEED = 30;  // 30ms per pixel (smooth ping-pong return)
+
+  unsigned long scrollFwdDuration = (unsigned long)overflow * SCROLL_SPEED;
+  unsigned long returnDuration = (unsigned long)overflow * RETURN_SPEED;
+  unsigned long totalCycle = PAUSE_START + scrollFwdDuration + PAUSE_END + returnDuration;
+
+  unsigned long elapsed = now - trackStartTime;
+  unsigned long cycleTime = elapsed % totalCycle;
+
+  // Phase 1: Static at beginning
+  if (cycleTime < PAUSE_START) {
+    return 0;
+  }
+  cycleTime -= PAUSE_START;
+
+  // Phase 2: Smooth forward scroll to reveal chopped text
+  if (cycleTime < scrollFwdDuration) {
+    return (int16_t)(cycleTime / SCROLL_SPEED);
+  }
+  cycleTime -= scrollFwdDuration;
+
+  // Phase 3: Static at end
+  if (cycleTime < PAUSE_END) {
+    return overflow;
+  }
+  cycleTime -= PAUSE_END;
+
+  // Phase 4: Smooth return to start (ping-pong)
+  int16_t returnPx = (int16_t)(cycleTime / RETURN_SPEED);
+  int16_t offset = overflow - returnPx;
+  if (offset < 0) offset = 0;
+  return offset;
+}
+
+void DisplayUI::drawScrollingText(int16_t x, int16_t y, const String &text,
+                                  int16_t maxW, uint16_t color, unsigned long now) {
+  if (text.length() == 0) return;
+
+  int16_t textW = text.length() * 6;
+
+  // Case 1: Fits comfortably in available space
+  if (textW <= maxW) {
+    canvas.setCursor(x, y);
+    canvas.setTextSize(1);
+    canvas.setTextColor(color);
     canvas.print(text);
-  } else {
-    String truncated = text.substring(0, maxChars - 3) + "...";
-    canvas.print(truncated);
+    return;
+  }
+
+  // Case 2: Overflows available space -> smooth marquee
+  int16_t offset = calculateScrollOffset(text, maxW, now);
+  int16_t clipRightX = x + maxW;
+
+  canvas.setTextSize(1);
+  canvas.setTextColor(color);
+
+  int len = text.length();
+  for (int i = 0; i < len; i++) {
+    int16_t charX = x - offset + (i * 6);
+    // Skip characters completely to the left
+    if (charX + 6 <= x) continue;
+    // Stop once characters reach the right clipping edge
+    if (charX >= clipRightX) break;
+
+    // Draw single character with black background
+    canvas.drawChar(charX, y, text[i], color, COLOR_BG, 1);
+  }
+
+  // Hardware clipping gutters:
+  // Clean left gutter between album art (x=101) and text start (x=113)
+  const int16_t artRight = 15 + ARTWORK_SIZE;
+  if (x > artRight) {
+    canvas.fillRect(artRight, y, x - artRight, 12, COLOR_BG);
+  }
+  // Clean right gutter between clipRightX (226) and screen right edge (240)
+  if (clipRightX < SCREEN_WIDTH) {
+    canvas.fillRect(clipRightX, y, SCREEN_WIDTH - clipRightX, 12, COLOR_BG);
   }
 }
 
@@ -91,6 +169,8 @@ void DisplayUI::drawPlaceholderArt(int16_t x, int16_t y, int16_t size) {
 }
 
 void DisplayUI::render(const TrackInfo &info, uint32_t currentElapsed) {
+  unsigned long now = millis();
+
   // Clear off-screen buffer (0x0000 Pitch-Black)
   canvas.fillScreen(COLOR_BG);
 
@@ -133,63 +213,49 @@ void DisplayUI::render(const TrackInfo &info, uint32_t currentElapsed) {
   const int16_t GAP = 12;
   const int16_t tx = artX + ARTWORK_SIZE + GAP;       // 15 + 86 + 12 = 113
   const int16_t textRightX = SCREEN_WIDTH - 14;       // 226 (14px right margin)
-  const int maxChars = (textRightX - tx) / 6;         // 18-19 characters
+  const int16_t maxW = textRightX - tx;               // 113 pixels wide
 
   const int16_t LINE_H = 12;
-  const int16_t GAP_META = 6;
 
   if (!info.isRunning || info.state == "stopped") {
     // Idle state — vertically centered to artwork
     int16_t idleH = LINE_H * 3 + 6;
     int16_t idleY = artY + (ARTWORK_SIZE - idleH) / 2;
 
-    canvas.setTextSize(1);
-    canvas.setTextColor(COLOR_TEXT);
-
-    canvas.setCursor(tx, idleY);
-    canvas.print("Apple Music");
-
-    canvas.setCursor(tx, idleY + LINE_H + 3);
-    canvas.print("Ready / Idle");
-
-    canvas.setCursor(tx, idleY + (LINE_H + 3) * 2);
-    canvas.print("No track playing");
+    drawScrollingText(tx, idleY, "Apple Music", maxW, COLOR_TEXT, now);
+    drawScrollingText(tx, idleY + LINE_H + 3, "Ready / Idle", maxW, COLOR_MUTED, now);
+    drawScrollingText(tx, idleY + (LINE_H + 3) * 2, "No track playing", maxW, COLOR_MUTED, now);
   } else {
-    // 2 lines reserved for Title, 1 line for Artist, 1 line for Album
-    bool titleWraps = ((int)info.title.length() > maxChars);
-    int16_t titleLines = titleWraps ? 2 : 1;
+    // Check if track changed to reset scroll animation cycle
+    if (info.title != lastTrackTitle || info.artist != lastTrackArtist) {
+      lastTrackTitle = info.title;
+      lastTrackArtist = info.artist;
+      trackStartTime = now;
+    }
 
-    // Total height of the text block (Title lines + gap + Artist + Album)
-    int16_t blockH = (titleLines * LINE_H) + GAP_META + LINE_H + LINE_H;
+    // Modern Typographic Layout:
+    // Line 1: Title (White, scrolls if > 113px)
+    // Line 2: Artist (White, scrolls if > 113px)
+    // Line 3: Album (Muted Gray, scrolls if > 113px)
+    bool hasAlbum = (info.album.length() > 0 && info.album != info.title);
+    int16_t blockH = hasAlbum ? (LINE_H + 7 + LINE_H + 6 + LINE_H) : (LINE_H + 8 + LINE_H);
 
     // Vertically center text block to the album art
     int16_t y = artY + (ARTWORK_SIZE - blockH) / 2;
 
-    // Title (Supports up to 2 lines)
-    if (!titleWraps) {
-      drawTruncatedText(tx, y, info.title, maxChars);
-      y += LINE_H;
-    } else {
-      int breakIdx = info.title.lastIndexOf(' ', maxChars);
-      if (breakIdx <= 4) breakIdx = maxChars;
-      String line1 = info.title.substring(0, breakIdx);
-      String line2 = info.title.substring(breakIdx);
-      line2.trim();
-      drawTruncatedText(tx, y, line1, maxChars);
-      y += LINE_H;
-      drawTruncatedText(tx, y, line2, maxChars);
-      y += LINE_H;
-    }
-
-    y += GAP_META;
+    // Title (1 line)
+    drawScrollingText(tx, y, info.title, maxW, COLOR_TEXT, now);
+    y += LINE_H + (hasAlbum ? 7 : 8);
 
     // Artist (1 line)
-    drawTruncatedText(tx, y, info.artist, maxChars);
+    drawScrollingText(tx, y, info.artist, maxW, COLOR_TEXT, now);
     y += LINE_H;
 
-    // Album (1 line)
-    drawTruncatedText(tx, y, info.album, maxChars);
-    y += LINE_H;
+    // Album (1 line, muted gray)
+    if (hasAlbum) {
+      y += 6;
+      drawScrollingText(tx, y, info.album, maxW, COLOR_MUTED, now);
+    }
   }
 
   // ---------------------------------------------------------------------

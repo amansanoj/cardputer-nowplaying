@@ -160,8 +160,9 @@ void loop() {
     }
   }
 
-  // 5. Smooth local 1-second time interpolation & screen refresh
-  if (now - lastRenderTime >= 1000) {
+  // 5. Smooth screen refresh & marquee text scrolling (50ms / 20 FPS)
+  const unsigned long RENDER_INTERVAL_MS = 50;
+  if (now - lastRenderTime >= RENDER_INTERVAL_MS) {
     lastRenderTime = now;
 
     if (currentTrack.isRunning && currentTrack.state == "playing") {
@@ -179,5 +180,5 @@ void loop() {
   }
 
   // Yield to RTOS and WiFi stack
-  delay(20);
+  delay(10);
 }
