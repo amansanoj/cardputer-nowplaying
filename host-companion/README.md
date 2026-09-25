@@ -20,7 +20,7 @@ python3 host-companion/bridge.py --port 58329
 ```
 
 ## Available Endpoints
-- `GET /api/now-playing` - Returns JSON track metadata:
+- `GET /api/now-playing` - Returns JSON track metadata and Mac time:
   ```json
   {
     "running": true,
@@ -30,9 +30,13 @@ python3 host-companion/bridge.py --port 58329
     "album": "Album Name",
     "duration": 229,
     "elapsed": 129,
-    "artwork_id": "8f14e45f94b4"
+    "artwork_id": "8f14e45f94b4",
+    "clock": "18:52"
   }
   ```
+- `POST /api/toggle` (or `GET /api/toggle`) - Toggle Play/Pause in Apple Music.
+- `POST /api/next` (or `GET /api/next`) - Skip to next track.
+- `POST /api/previous` (or `GET /api/previous`) - Return to previous track.
 - `GET /artwork.raw` or `/artwork.rgb565` - Raw 86x86 16-bit RGB565 binary data (14,792 bytes).
 - `GET /artwork.jpg` - Downscaled 86x86 JPEG image.
 - `GET /health` - Returns `OK`.
