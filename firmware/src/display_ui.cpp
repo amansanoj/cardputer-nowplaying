@@ -147,6 +147,89 @@ void DisplayUI::drawScrollingText(int16_t x, int16_t y, const String &text,
   }
 }
 
+void DisplayUI::getBatteryInfo(uint8_t &pct, bool &isCharging) {
+#if defined(BAT_ADC_PIN) && (BAT_ADC_PIN >= 0)
+  static uint32_t smoothedMv = 0;
+  uint32_t rawMv = analogReadMilliVolts(BAT_ADC_PIN) * 2;
+  if (smoothedMv == 0) smoothedMv = rawMv;
+  else smoothedMv = (smoothedMv * 7 + rawMv) / 8;
+
+  if (smoothedMv >= 4200) {
+    isCharging = true;
+    pct = 100;
+  } else if (smoothedMv <= 3350) {
+    isCharging = false;
+    pct = 0;
+  } else {
+    isCharging = false;
+    pct = (uint8_t)(((smoothedMv - 3350) * 100) / (4200 - 3350));
+    if (pct > 100) pct = 100;
+  }
+#else
+  // Wokwi simulation / USB DevKit fallback
+  isCharging = true;
+  pct = 100;
+#endif
+}
+
+void DisplayUI::drawStatusBar(int16_t x, int16_t y, int16_t rightX, const String &clockTime) {
+  // 1. Clock (Left side of status row)
+  if (clockTime.length() > 0) {
+    canvas.setTextSize(1);
+    canvas.setTextColor(COLOR_MUTED);
+    canvas.setCursor(x, y);
+    canvas.print(clockTime);
+  }
+
+  // 2. Battery & Wi-Fi (Right side of status row)
+  uint8_t batPct = 100;
+  bool isCharging = false;
+  getBatteryInfo(batPct, isCharging);
+
+  // Battery Capsule: 15px wide x 8px high
+  const int16_t batW = 15;
+  const int16_t batH = 8;
+  const int16_t bx = rightX - batW;
+  const int16_t by = y;
+
+  // Battery body (rounded rect) & terminal cap
+  canvas.drawRoundRect(bx, by, batW - 2, batH, 2, COLOR_MUTED);
+  canvas.fillRect(bx + batW - 2, by + 2, 2, 4, COLOR_MUTED);
+
+  if (isCharging) {
+    // Crisp minimalist lightning bolt (white)
+    canvas.drawLine(bx + 7, by + 1, bx + 5, by + 4, COLOR_TEXT);
+    canvas.drawLine(bx + 5, by + 4, bx + 8, by + 4, COLOR_TEXT);
+    canvas.drawLine(bx + 8, by + 4, bx + 6, by + 7, COLOR_TEXT);
+  } else {
+    // Proportional level fill (inner area: 9px wide x 4px high)
+    int16_t fillW = (batPct * 9) / 100;
+    if (fillW > 0) {
+      uint16_t fillColor = (batPct <= 15) ? 0xF800 : COLOR_TEXT;
+      canvas.fillRect(bx + 2, by + 2, fillW, 4, fillColor);
+    }
+  }
+
+  // Battery Percentage Text (e.g. "85%")
+  String pctStr = String(batPct) + "%";
+  int16_t pctX = bx - 3 - (pctStr.length() * 6);
+  canvas.setTextSize(1);
+  canvas.setTextColor(COLOR_MUTED);
+  canvas.setCursor(pctX, by);
+  canvas.print(pctStr);
+
+  // Wi-Fi 3-bar signal indicator
+  int8_t rssi = (WiFi.status() == WL_CONNECTED) ? WiFi.RSSI() : -100;
+  int16_t wx = pctX - 6 - 8;
+  uint16_t b1 = (rssi > -90) ? COLOR_TEXT : 0x3186;
+  uint16_t b2 = (rssi > -75) ? COLOR_TEXT : 0x3186;
+  uint16_t b3 = (rssi > -65) ? COLOR_TEXT : 0x3186;
+
+  canvas.fillRect(wx, by + 5, 2, 3, b1);
+  canvas.fillRect(wx + 3, by + 3, 2, 5, b2);
+  canvas.fillRect(wx + 6, by + 1, 2, 7, b3);
+}
+
 void DisplayUI::drawPlaceholderArt(int16_t x, int16_t y, int16_t size) {
   // Strict minimalist: pure pitch-black with a crisp white musical note glyph
   canvas.fillRect(x, y, size, size, COLOR_BG);
@@ -204,23 +287,22 @@ void DisplayUI::render(const TrackInfo &info, uint32_t currentElapsed) {
   }
 
   // ---------------------------------------------------------------------
-  // 2. Track Metadata (Right side of art, vertically centered to album art)
+  // 2. Track Metadata & Status Bar (Right side of art)
   // ---------------------------------------------------------------------
   const int16_t GAP = 12;
   const int16_t tx = artX + ARTWORK_SIZE + GAP;       // 15 + 86 + 12 = 113
   const int16_t textRightX = SCREEN_WIDTH - 14;       // 226 (14px right margin)
   const int16_t maxW = textRightX - tx;               // 113 pixels wide
 
-  const int16_t LINE_H = 12;
+  // Top Status Bar: Clock, Wi-Fi RSSI, Battery % & Icon
+  drawStatusBar(tx, artY, textRightX, info.clock);
 
   if (!info.isRunning || info.state == "stopped") {
-    // Idle state — vertically centered to artwork
-    int16_t idleH = LINE_H * 3 + 6;
-    int16_t idleY = artY + (ARTWORK_SIZE - idleH) / 2;
-
+    // Idle state
+    int16_t idleY = 35;
     drawScrollingText(tx, idleY, "Apple Music", maxW, COLOR_TEXT, now);
-    drawScrollingText(tx, idleY + LINE_H + 3, "Ready / Idle", maxW, COLOR_MUTED, now);
-    drawScrollingText(tx, idleY + (LINE_H + 3) * 2, "No track playing", maxW, COLOR_MUTED, now);
+    drawScrollingText(tx, idleY + 18, "Ready / Idle", maxW, COLOR_MUTED, now);
+    drawScrollingText(tx, idleY + 36, "No track playing", maxW, COLOR_MUTED, now);
   } else {
     // Check if track changed to reset scroll animation cycle
     if (info.title != lastTrackTitle || info.artist != lastTrackArtist) {
@@ -229,27 +311,23 @@ void DisplayUI::render(const TrackInfo &info, uint32_t currentElapsed) {
       trackStartTime = now;
     }
 
-    // Modern Typographic Layout:
-    // Line 1: Title (White, scrolls if > 113px)
-    // Line 2: Artist (White, scrolls if > 113px)
-    // Line 3: Album (Muted Gray, scrolls if > 113px)
     bool hasAlbum = (info.album.length() > 0 && info.album != info.title);
-    int16_t blockH = hasAlbum ? (LINE_H + 7 + LINE_H + 6 + LINE_H) : (LINE_H + 8 + LINE_H);
 
-    // Vertically center text block to the album art
-    int16_t y = artY + (ARTWORK_SIZE - blockH) / 2;
+    // Dynamic vertical layout:
+    // With album: Title at 34, Artist at 52, Album at 69
+    // Without album: Title at 40, Artist at 60
+    int16_t y = hasAlbum ? 34 : 40;
 
-    // Title (1 line)
+    // Title (1 line, white, 10s infinite forward marquee)
     drawScrollingText(tx, y, info.title, maxW, COLOR_TEXT, now);
-    y += LINE_H + (hasAlbum ? 7 : 8);
+    y += hasAlbum ? 18 : 20;
 
-    // Artist (1 line)
+    // Artist (1 line, white, 10s infinite forward marquee)
     drawScrollingText(tx, y, info.artist, maxW, COLOR_TEXT, now);
-    y += LINE_H;
+    y += 17;
 
-    // Album (1 line, muted gray)
+    // Album (1 line, muted gray, 10s infinite forward marquee)
     if (hasAlbum) {
-      y += 6;
       drawScrollingText(tx, y, info.album, maxW, COLOR_MUTED, now);
     }
   }

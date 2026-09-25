@@ -86,6 +86,7 @@ bool MusicClient::fetchMetadata(TrackInfo& info) {
   info.duration  = doc["duration"] | 0;
   info.elapsed   = doc["elapsed"] | 0;
   info.artworkId = doc["artwork_id"] | "";
+  info.clock     = doc["clock"] | "";
 
   return true;
 }

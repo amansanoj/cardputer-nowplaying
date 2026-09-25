@@ -17,6 +17,7 @@
 #define TFT_MOSI 35 // DAT (SPI MOSI) is G35 on Cardputer-Adv
 #define TFT_SCLK 36 // SCK (SPI Clock) is G36 on Cardputer-Adv
 #define TFT_BL 38   // DISP_BL & RGB LED PWR_EN switch (Set HIGH)
+#define BAT_ADC_PIN 10 // Battery voltage sensing ADC (ratio 2.0)
 #define BOARD_NAME "Cardputer-Adv"
 #elif defined(TARGET_M5_CARDPUTER)
 // =====================================================================
@@ -28,6 +29,7 @@
 #define TFT_MOSI 6
 #define TFT_SCLK 8
 #define TFT_BL 38 // Backlight control pin
+#define BAT_ADC_PIN 10 // Battery voltage sensing ADC (ratio 2.0)
 #define BOARD_NAME "Cardputer v1.x"
 #elif defined(TARGET_CUSTOM_ESP32S3)
 // Custom board pins
@@ -37,6 +39,7 @@
 #define TFT_MOSI 11
 #define TFT_SCLK 12
 #define TFT_BL -1
+#define BAT_ADC_PIN -1
 #define BOARD_NAME "Custom ESP32-S3"
 #else // TARGET_WOKWI_SIMULATOR
 // =====================================================================
@@ -48,6 +51,7 @@
 #define TFT_MOSI 11
 #define TFT_SCLK 12
 #define TFT_BL -1 // No backlight pin needed in Wokwi
+#define BAT_ADC_PIN -1
 #define BOARD_NAME "Wokwi Sim"
 #endif
 

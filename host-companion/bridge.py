@@ -170,7 +170,8 @@ class MusicBridge:
                 "album": "",
                 "duration": 0,
                 "elapsed": 0,
-                "artwork_id": "none"
+                "artwork_id": "none",
+                "clock": time.strftime("%H:%M")
             }
             return
 
@@ -200,7 +201,8 @@ class MusicBridge:
             "album": album,
             "duration": duration,
             "elapsed": elapsed,
-            "artwork_id": artwork_id
+            "artwork_id": artwork_id,
+            "clock": time.strftime("%H:%M")
         }
 
     def _extract_and_convert_artwork(self, track_key):

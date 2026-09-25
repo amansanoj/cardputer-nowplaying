@@ -11,6 +11,7 @@ struct TrackInfo {
   uint32_t duration = 0;
   uint32_t elapsed = 0;
   String artworkId = "";
+  String clock = "";
 };
 
 class DisplayUI {
@@ -33,6 +34,8 @@ private:
   unsigned long trackStartTime;
 
   void drawPlaceholderArt(int16_t x, int16_t y, int16_t size);
+  void drawStatusBar(int16_t x, int16_t y, int16_t rightX, const String& clockTime);
+  void getBatteryInfo(uint8_t &pct, bool &isCharging);
   void drawScrollingText(int16_t x, int16_t y, const String& text, int16_t maxW, uint16_t color, unsigned long now);
   int16_t calculateScrollOffset(const String& text, int16_t maxW, unsigned long now);
   String formatTime(uint32_t totalSeconds);
