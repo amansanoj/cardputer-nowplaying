@@ -370,105 +370,156 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
 <html>
 <head>
   <meta charset="utf-8">
-  <title>Apple Music Companion Bridge</title>
+  <title>Cardputer Now Playing</title>
   <meta http-equiv="refresh" content="2">
   <style>
+    @import url('https://cdn.jsdelivr.net/npm/@amansanoj/brand/globals.css');
+
+    * {{ box-sizing: border-box; margin: 0; padding: 0; }}
+    html, body {{ height: 100%; }}
+
     body {{
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-      background: #111;
-      color: #eee;
+      font-family: var(--font-body);
+      background: var(--background);
+      color: var(--text);
+      min-height: 100vh;
       display: flex;
       flex-direction: column;
       align-items: center;
       justify-content: center;
-      min-height: 100vh;
-      margin: 0;
+      padding: 32px 20px;
+      -webkit-font-smoothing: antialiased;
     }}
+
     .card {{
-      background: #1c1c1e;
-      border-radius: 12px;
-      padding: 24px;
-      box-shadow: 0 8px 24px rgba(0,0,0,0.5);
+      width: 100%;
+      max-width: 420px;
       display: flex;
-      gap: 20px;
-      max-width: 520px;
-      width: 90%;
+      gap: 18px;
+      align-items: center;
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      background: var(--card);
+      padding: 20px;
     }}
+
     .art {{
       width: 86px;
       height: 86px;
-      border-radius: 6px;
-      background: #000;
+      border-radius: calc(var(--radius) - 4px);
+      background: var(--muted);
       object-fit: cover;
-      border: 1px solid #333;
+      border: 1px solid var(--border);
+      flex-shrink: 0;
     }}
+
     .info {{
       display: flex;
       flex-direction: column;
       justify-content: center;
       overflow: hidden;
+      min-width: 0;
+      gap: 2px;
     }}
+
     .title {{
-      font-size: 18px;
+      font-family: var(--font-display);
+      font-size: 1.05rem;
       font-weight: 600;
-      color: #fff;
-      margin-bottom: 4px;
+      color: var(--card-foreground);
       white-space: nowrap;
       overflow: hidden;
       text-overflow: ellipsis;
     }}
+
     .artist {{
-      font-size: 14px;
-      color: #aaa;
-      margin-bottom: 2px;
+      font-size: 0.85rem;
+      color: var(--muted-foreground);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
     }}
+
     .album {{
-      font-size: 12px;
-      color: #777;
-      margin-bottom: 8px;
+      font-size: 0.75rem;
+      color: var(--muted-foreground);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
     }}
+
     .time {{
-      font-family: monospace;
-      font-size: 13px;
-      color: #00ff88;
+      font-family: var(--font-mono);
+      font-size: 0.8rem;
+      color: var(--primary);
+      margin-top: 4px;
     }}
+
     .state {{
       display: inline-block;
-      padding: 2px 6px;
-      border-radius: 4px;
-      font-size: 11px;
+      padding: 2px 8px;
+      border-radius: 999px;
+      font-family: var(--font-mono);
+      font-size: 0.65rem;
       text-transform: uppercase;
-      font-weight: bold;
-      background: {'#2e7d32' if meta.get('state') == 'playing' else '#c62828'};
-      color: #fff;
+      letter-spacing: 0.03em;
+      font-weight: 600;
+      background: {'var(--primary)' if meta.get('state') == 'playing' else 'var(--destructive)'};
+      color: {'var(--primary-foreground)' if meta.get('state') == 'playing' else 'var(--destructive-foreground)'};
       margin-top: 6px;
       align-self: flex-start;
     }}
+
     .controls {{
-      margin-top: 15px;
+      margin-top: 18px;
       display: flex;
       gap: 10px;
       justify-content: center;
+      width: 100%;
+      max-width: 420px;
     }}
+
     .btn {{
-      background: #2c2c2e;
-      color: #fff;
-      border: 1px solid #444;
-      padding: 8px 16px;
-      border-radius: 6px;
-      cursor: pointer;
-      font-size: 13px;
-      text-decoration: none;
-    }}
-    .btn:hover {{ background: #3a3a3c; }}
-    .endpoints {{
-      margin-top: 20px;
-      font-size: 12px;
-      color: #888;
+      flex: 1;
       text-align: center;
+      background: var(--card);
+      color: var(--card-foreground);
+      border: 1px solid var(--border);
+      padding: 10px 14px;
+      border-radius: var(--radius);
+      cursor: pointer;
+      font-family: var(--font-body);
+      font-size: 0.85rem;
+      font-weight: 500;
+      text-decoration: none;
+      transition: border-color 0.15s ease, background-color 0.15s ease;
     }}
-    a {{ color: #0a84ff; text-decoration: none; }}
+    .btn:hover {{ border-color: var(--accent); background: var(--muted); }}
+
+    .endpoints {{
+      margin-top: 24px;
+      font-family: var(--font-mono);
+      font-size: 0.7rem;
+      color: var(--muted-foreground);
+      text-align: center;
+      line-height: 1.6;
+    }}
+    .endpoints a {{ color: var(--primary); text-decoration: none; }}
+    .endpoints a:hover {{ text-decoration: underline; }}
+    .endpoints code {{
+      font-family: var(--font-mono);
+      color: var(--muted-foreground);
+      background: var(--muted);
+      padding: 1px 6px;
+      border-radius: 4px;
+    }}
   </style>
+  <script>
+    (function () {{
+      var isDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+      document.documentElement.classList.toggle('dark', isDark);
+    }})();
+  </script>
 </head>
 <body>
   <div class="card">
