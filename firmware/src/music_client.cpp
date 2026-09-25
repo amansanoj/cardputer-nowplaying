@@ -4,22 +4,37 @@
 #include "../include/music_client.h"
 #endif
 
-MusicClient::MusicClient() {}
+MusicClient::MusicClient() : serverBaseUrl("") {}
 
-bool MusicClient::connectWiFi(DisplayUI& ui) {
+void MusicClient::setServer(const String& host, uint16_t port) {
+  String cleanHost = host;
+  cleanHost.trim();
+  if (cleanHost.startsWith("http://") || cleanHost.startsWith("https://")) {
+    serverBaseUrl = cleanHost;
+  } else {
+    serverBaseUrl = "http://" + cleanHost;
+  }
+  int colonIdx = serverBaseUrl.lastIndexOf(':');
+  if (colonIdx <= 5 && port > 0) {
+    serverBaseUrl += ":" + String(port);
+  }
+  Serial.printf("[MusicClient] Configured server endpoint: %s\n", serverBaseUrl.c_str());
+}
+
+bool MusicClient::connectWiFi(DisplayUI& ui, const String& ssid, const String& password) {
   if (WiFi.status() == WL_CONNECTED) {
     return true;
   }
 
-  Serial.printf("[WiFi] Connecting to %s...\n", WIFI_SSID);
-  ui.renderStatus("Connecting to WiFi:", String(WIFI_SSID));
+  Serial.printf("[WiFi] Connecting to %s...\n", ssid.c_str());
+  ui.renderStatus("Connecting to WiFi:", ssid);
 
   WiFi.mode(WIFI_STA);
-  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+  WiFi.begin(ssid.c_str(), password.length() > 0 ? password.c_str() : nullptr);
 
   unsigned long start = millis();
-  while (WiFi.status() != WL_CONNECTED && (millis() - start < 15000)) {
-    delay(500);
+  while (WiFi.status() != WL_CONNECTED && (millis() - start < 12000)) {
+    delay(400);
     Serial.print(".");
   }
   Serial.println();
@@ -27,21 +42,21 @@ bool MusicClient::connectWiFi(DisplayUI& ui) {
   if (WiFi.status() == WL_CONNECTED) {
     Serial.printf("[WiFi] Connected! IP: %s\n", WiFi.localIP().toString().c_str());
     ui.renderStatus("WiFi Connected!", "IP: " + WiFi.localIP().toString());
-    delay(1000);
+    delay(800);
     return true;
   } else {
     Serial.println("[WiFi] Connection failed!");
-    ui.renderStatus("WiFi Error", "Retrying...");
+    ui.renderStatus("WiFi Error", "Connection failed");
     return false;
   }
 }
 
 bool MusicClient::fetchMetadata(TrackInfo& info) {
-  if (WiFi.status() != WL_CONNECTED) {
+  if (WiFi.status() != WL_CONNECTED || serverBaseUrl.length() == 0) {
     return false;
   }
 
-  String url = String(SERVER_HOST) + METADATA_PATH;
+  String url = serverBaseUrl + METADATA_PATH;
   httpClient.begin(wifiClient, url);
   httpClient.setTimeout(2500);
 
@@ -76,11 +91,11 @@ bool MusicClient::fetchMetadata(TrackInfo& info) {
 }
 
 bool MusicClient::fetchArtwork(uint8_t* buffer, size_t bufferSize) {
-  if (WiFi.status() != WL_CONNECTED) {
+  if (WiFi.status() != WL_CONNECTED || serverBaseUrl.length() == 0) {
     return false;
   }
 
-  String url = String(SERVER_HOST) + ARTWORK_PATH;
+  String url = serverBaseUrl + ARTWORK_PATH;
   httpClient.begin(wifiClient, url);
   httpClient.setTimeout(3000);
 

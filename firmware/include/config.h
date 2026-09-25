@@ -66,16 +66,15 @@
 // =====================================================================
 // WI-FI & COMPANION BRIDGE NETWORKING
 // =====================================================================
-// In Wokwi simulator, connect to "Wokwi-GUEST" with empty password.
-// In Wokwi simulator, host machine is reachable at "host.wokwi.internal".
-#define WIFI_SSID "Wokwi-GUEST"
-#define WIFI_PASSWORD ""
+#define DEFAULT_PORT 58329
+#define AP_SSID "Cardputer-Setup"
+#define BTN_SETUP_PIN 0 // GPIO 0 (G0 / Boot button on Cardputer)
 
-// Host Companion Bridge address:
-// In Wokwi: "http://host.wokwi.internal:5001"
-// On physical hardware: "http://<YOUR_MAC_LAN_IP>:5001" (e.g.,
-// "http://192.168.1.150:5001")
-#define SERVER_HOST "http://host.wokwi.internal:5001"
+// Fallback defaults for Wokwi simulation:
+#define WOKWI_DEFAULT_SSID "Wokwi-GUEST"
+#define WOKWI_DEFAULT_PASS ""
+#define WOKWI_DEFAULT_HOST "host.wokwi.internal"
+
 #define METADATA_PATH "/api/now-playing"
 #define ARTWORK_PATH "/artwork.raw"
 

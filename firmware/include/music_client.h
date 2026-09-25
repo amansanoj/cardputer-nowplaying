@@ -5,11 +5,14 @@
 class MusicClient {
 public:
   MusicClient();
-  bool connectWiFi(DisplayUI& ui);
+  void setServer(const String& host, uint16_t port);
+  bool connectWiFi(DisplayUI& ui, const String& ssid, const String& password);
   bool fetchMetadata(TrackInfo& info);
   bool fetchArtwork(uint8_t* buffer, size_t bufferSize);
 
 private:
+  String serverBaseUrl;
   WiFiClient wifiClient;
   HTTPClient httpClient;
 };
+

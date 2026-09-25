@@ -252,3 +252,43 @@ void DisplayUI::renderStatus(const String &line1, const String &line2) {
 
   tft.drawRGBBitmap(0, 0, canvas.getBuffer(), SCREEN_WIDTH, SCREEN_HEIGHT);
 }
+
+void DisplayUI::renderSetupScreen(const String &apName, const String &apIP) {
+  canvas.fillScreen(COLOR_BG);
+
+  // Top header bar (subtle dark gray strip)
+  canvas.fillRect(0, 0, SCREEN_WIDTH, 18, 0x18E3);
+  canvas.setTextColor(COLOR_TEXT);
+  canvas.setTextSize(1);
+  canvas.setCursor(12, 5);
+  canvas.print("CARDPUTER SETUP MODE");
+
+  // Step 1: Wi-Fi AP
+  canvas.setTextColor(0xAD55); // light muted gray
+  canvas.setCursor(12, 26);
+  canvas.print("1. Connect Wi-Fi to AP:");
+
+  canvas.fillRect(12, 38, SCREEN_WIDTH - 24, 18, 0x10A2);
+  canvas.drawRect(12, 38, SCREEN_WIDTH - 24, 18, 0x3186);
+  canvas.setTextColor(COLOR_TEXT);
+  canvas.setCursor(20, 43);
+  canvas.print(apName);
+
+  // Step 2: Browser URL
+  canvas.setTextColor(0xAD55);
+  canvas.setCursor(12, 64);
+  canvas.print("2. Open in browser:");
+
+  canvas.fillRect(12, 76, SCREEN_WIDTH - 24, 18, 0x10A2);
+  canvas.drawRect(12, 76, SCREEN_WIDTH - 24, 18, 0x3186);
+  canvas.setTextColor(COLOR_TEXT);
+  canvas.setCursor(20, 81);
+  canvas.print("http://" + apIP);
+
+  // Bottom hint
+  canvas.setTextColor(0x632C); // subtle gray
+  canvas.setCursor(12, 108);
+  canvas.print("Or enter via USB Serial CLI");
+
+  tft.drawRGBBitmap(0, 0, canvas.getBuffer(), SCREEN_WIDTH, SCREEN_HEIGHT);
+}

@@ -20,6 +20,7 @@ public:
   void setArtworkData(const uint8_t* rawData, size_t length);
   void render(const TrackInfo& info, uint32_t currentElapsed);
   void renderStatus(const String& line1, const String& line2 = "");
+  void renderSetupScreen(const String& apName, const String& apIP);
 
 private:
   Adafruit_ST7789 tft;

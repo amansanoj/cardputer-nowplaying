@@ -22,7 +22,10 @@ Icon
 *.swo
 *~
 
-# Temporary & build logs
+# Temporary & build logs & release binaries
 *.log
 *.tmp
+*.bin
+releases/
 scratch/
+
