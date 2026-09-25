@@ -1,5 +1,5 @@
-# Wireless Apple Music Now Playing Display
-A minimalist, zero-flicker **Now Playing** display for Apple Music on macOS built for the **M5Stack Cardputer**, **Cardputer-Adv**, and **ESP32-S3**.
+# Cardputer Now Playing
+A minimalist, zero-flicker wireless display for Apple Music on macOS built for the **M5Stack Cardputer**, **Cardputer-Adv**, and **ESP32-S3**.
 
 ![Demo](Untitled%20design.gif)
 

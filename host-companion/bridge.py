@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-Apple Music Now Playing - macOS Companion Bridge
-Query Music.app via native AppleScript/JXA, downscale cover art to 90x90 RGB565/JPEG,
+Cardputer Now Playing - macOS Companion Bridge
+Query Music.app via native AppleScript/JXA, downscale cover art to 86x86 RGB565/JPEG,
 and serve HTTP endpoints for ESP32 / Wokwi simulator.
 
 Endpoints:
@@ -546,7 +546,7 @@ def main():
     local_ip = get_local_ip()
 
     print("=" * 60)
-    print(" Apple Music Now Playing - ESP32 / Wokwi Companion Bridge")
+    print(" Cardputer Now Playing - ESP32 / Wokwi Companion Bridge")
     print("=" * 60)
     print(f" * Listening on        : http://{args.host}:{args.port}")
     print(f" * Mac Local IP        : http://{local_ip}:{args.port}")

@@ -33,7 +33,7 @@ void setup() {
   delay(500);
 
   Serial.println("==================================================");
-  Serial.println(" ESP32-S3 Apple Music Now Playing Display");
+  Serial.println(" Cardputer Now Playing Display");
   Serial.println("==================================================");
 
   // Initialize keyboard (TCA8418 on Cardputer-Adv or Serial fallback)

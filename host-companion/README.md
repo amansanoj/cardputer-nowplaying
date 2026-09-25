@@ -1,4 +1,4 @@
-# Apple Music Now Playing - macOS Companion Bridge
+# Cardputer Now Playing - macOS Companion Bridge
 
 A lightweight local service that interfaces natively with macOS `Music.app` via AppleScript / JXA (`osascript`) and downscales album art via macOS's built-in `sips` engine into ESP32-ready formats (raw RGB565 and JPEG).
 
