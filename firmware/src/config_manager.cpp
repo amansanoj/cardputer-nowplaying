@@ -112,21 +112,6 @@ void ConfigManager::runSetupPortal(DisplayUI& ui, AppConfig& config) {
 <style>
   @import url('https://cdn.jsdelivr.net/npm/@amansanoj/brand/globals.css');
 
-  :root {
-    --background: #000000;
-    --text: #ffffff;
-    --card: #111111;
-    --border: #282828;
-    --radius: 8px;
-    --primary: #ffffff;
-    --primary-foreground: #000000;
-    --muted-foreground: #888888;
-    --accent: #00ff88;
-    --font-body: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-    --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-    --font-display: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-  }
-
   * { box-sizing: border-box; margin: 0; padding: 0; }
   html, body { height: 100%; }
 
