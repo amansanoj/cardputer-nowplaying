@@ -111,6 +111,22 @@ void DisplayUI::render(const TrackInfo &info, uint32_t currentElapsed) {
     drawPlaceholderArt(artX, artY, ARTWORK_SIZE);
   }
 
+  // If paused, overlay minimalist Dynamic Island-style pause pill
+  if (info.isRunning && info.state == "paused") {
+    const int16_t badgeW = 16;
+    const int16_t badgeH = 16;
+    const int16_t badgeX = artX + ARTWORK_SIZE - badgeW - 3;
+    const int16_t badgeY = artY + ARTWORK_SIZE - badgeH - 3;
+
+    // Dark pill container with subtle border
+    canvas.fillRoundRect(badgeX, badgeY, badgeW, badgeH, 4, COLOR_BG);
+    canvas.drawRoundRect(badgeX, badgeY, badgeW, badgeH, 4, 0x3186);
+
+    // Two crisp white pause bars (2px x 8px)
+    canvas.fillRect(badgeX + 4, badgeY + 4, 2, 8, COLOR_TEXT);
+    canvas.fillRect(badgeX + 10, badgeY + 4, 2, 8, COLOR_TEXT);
+  }
+
   // ---------------------------------------------------------------------
   // 2. Track Metadata (Right side of art, vertically centered to album art)
   // ---------------------------------------------------------------------
@@ -143,11 +159,8 @@ void DisplayUI::render(const TrackInfo &info, uint32_t currentElapsed) {
     bool titleWraps = ((int)info.title.length() > maxChars);
     int16_t titleLines = titleWraps ? 2 : 1;
 
-    // Total height of the text block
+    // Total height of the text block (Title lines + gap + Artist + Album)
     int16_t blockH = (titleLines * LINE_H) + GAP_META + LINE_H + LINE_H;
-    if (info.state == "paused") {
-      blockH += 3 + LINE_H;
-    }
 
     // Vertically center text block to the album art
     int16_t y = artY + (ARTWORK_SIZE - blockH) / 2;
@@ -177,12 +190,6 @@ void DisplayUI::render(const TrackInfo &info, uint32_t currentElapsed) {
     // Album (1 line)
     drawTruncatedText(tx, y, info.album, maxChars);
     y += LINE_H;
-
-    // Optional status tag if paused
-    if (info.state == "paused") {
-      y += 3;
-      drawTruncatedText(tx, y, "[ PAUSED ]", maxChars);
-    }
   }
 
   // ---------------------------------------------------------------------
