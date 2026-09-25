@@ -79,13 +79,23 @@ void ConfigManager::runSetupPortal(DisplayUI& ui, AppConfig& config) {
   Serial.println("[Setup] Scanning Wi-Fi networks...");
   int n = WiFi.scanNetworks();
   String networkOptions = "";
-  if (n == 0) {
+  if (n <= 0) {
     networkOptions += "<option value=\"\">No networks found</option>";
   } else {
+    std::vector<String> seen;
     for (int i = 0; i < n; ++i) {
       String ssid = WiFi.SSID(i);
-      if (ssid.length() > 0) {
-        networkOptions += "<option value=\"" + ssid + "\">" + ssid + " (" + String(WiFi.RSSI(i)) + " dBm)</option>";
+      if (ssid.length() == 0) continue;
+      bool duplicate = false;
+      for (const auto& s : seen) {
+        if (s == ssid) {
+          duplicate = true;
+          break;
+        }
+      }
+      if (!duplicate) {
+        seen.push_back(ssid);
+        networkOptions += "<option value=\"" + ssid + "\">" + ssid + " &middot; " + String(WiFi.RSSI(i)) + " dBm</option>";
       }
     }
   }
