@@ -1,0 +1,12 @@
+If:
+  PathMatch: .*\.ino
+CompileFlags:
+  Add: [-x, c++, -std=gnu++17]
+---
+If:
+  PathMatch: .*\.c
+CompileFlags:
+  Add: [-std=gnu17]
+---
+Diagnostics:
+  Suppress: ["drv_unknown_argument"]

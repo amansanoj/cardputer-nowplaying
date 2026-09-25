@@ -1,0 +1,28 @@
+# PlatformIO build outputs & libraries
+.pio/
+firmware/.pio/
+
+# Python cache & bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.pytest_cache/
+
+# macOS metadata
+.DS_Store
+.AppleDouble
+.LSOverride
+Icon
+
+# Editor & Language Server artifacts
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Temporary & build logs
+*.log
+*.tmp
+scratch/

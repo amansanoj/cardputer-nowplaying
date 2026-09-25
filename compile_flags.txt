@@ -1,0 +1,7 @@
+-Ifirmware/include
+-Ifirmware/src
+-Ifirmware
+-Iinclude
+-Isrc
+-I.
+-Wno-unknown-attributes
