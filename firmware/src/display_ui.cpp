@@ -6,7 +6,7 @@
 
 DisplayUI::DisplayUI()
     : tft(TFT_CS, TFT_DC, TFT_RST), canvas(SCREEN_WIDTH, SCREEN_HEIGHT),
-      hasArtwork(false), lastTrackTitle(""), lastTrackArtist(""), trackStartTime(0) {
+      hasArtwork(false) {
   memset(artworkBuffer, 0, sizeof(artworkBuffer));
 }
 
@@ -59,39 +59,8 @@ String DisplayUI::formatTime(uint32_t totalSeconds) {
   return String(buf);
 }
 
-int16_t DisplayUI::calculateScrollOffset(const String &text, int16_t maxW, unsigned long now) {
-  int16_t textW = text.length() * 6;
-  if (textW <= maxW) {
-    return 0; // Text fits inside column, no scrolling needed
-  }
-
-  const int16_t gapSpaces = 5;
-  int16_t loopW = (text.length() + gapSpaces) * 6;
-
-  // Infinite forward scroll: hold at start for 10 seconds, then scroll forward 1 full loop
-  const unsigned long PAUSE_INTERVAL = 10000; // 10 seconds stationary pause
-  const unsigned long SCROLL_SPEED = 40;      // 40ms per pixel smooth forward glide
-
-  unsigned long scrollDuration = (unsigned long)loopW * SCROLL_SPEED;
-  unsigned long totalCycle = PAUSE_INTERVAL + scrollDuration;
-
-  unsigned long elapsed = now - trackStartTime;
-  unsigned long cycleTime = elapsed % totalCycle;
-
-  // Hold stationary at start for 10 seconds
-  if (cycleTime < PAUSE_INTERVAL) {
-    return 0;
-  }
-
-  // Scroll forward in one direction
-  unsigned long scrollTime = cycleTime - PAUSE_INTERVAL;
-  int16_t offset = (int16_t)(scrollTime / SCROLL_SPEED);
-  if (offset >= loopW) offset = 0;
-  return offset;
-}
-
 void DisplayUI::drawScrollingText(int16_t x, int16_t y, const String &text,
-                                  int16_t maxW, uint16_t color, unsigned long now) {
+                                  int16_t maxW, uint16_t color, LineScroller &scroller, unsigned long now) {
   if (text.length() == 0) return;
 
   int16_t textW = text.length() * 6;
@@ -105,8 +74,8 @@ void DisplayUI::drawScrollingText(int16_t x, int16_t y, const String &text,
     return;
   }
 
-  // Case 2: Overflows available space -> infinite forward scroll every 10s
-  int16_t offset = calculateScrollOffset(text, maxW, now);
+  // Case 2: Overflows available space -> per-line 10s independent scroll & reset
+  int16_t offset = scroller.getOffset(text, maxW, now);
   int16_t clipRightX = x + maxW;
 
   const int16_t gapSpaces = 5;
@@ -119,29 +88,37 @@ void DisplayUI::drawScrollingText(int16_t x, int16_t y, const String &text,
   canvas.setTextSize(1);
   canvas.setTextColor(color);
 
-  // Determine starting virtual index v based on offset
-  int startV = effectiveOffset / 6;
-  if (startV > 0) startV--; // margin for partial rendering
+  // If offset == 0 (stationary during the 10s pause), render cleanly from start
+  if (effectiveOffset == 0) {
+    int maxVisible = maxW / 6;
+    for (int i = 0; i < textLen && i <= maxVisible; i++) {
+      int16_t charX = x + (i * 6);
+      if (charX >= clipRightX) break;
+      canvas.drawChar(charX, y, text[i], color, COLOR_BG, 1);
+    }
+  } else {
+    // Scrolling: render wrapping virtual characters
+    int startV = effectiveOffset / 6;
+    if (startV > 0) startV--;
 
-  for (int v = startV;; v++) {
-    int16_t charX = x - effectiveOffset + (v * 6);
-    if (charX >= clipRightX) break; // Reached right clip edge
-    if (charX + 6 <= x) continue;   // Before left clip edge
+    for (int v = startV;; v++) {
+      int16_t charX = x - effectiveOffset + (v * 6);
+      if (charX >= clipRightX) break; // Reached right clip edge
+      if (charX + 6 <= x) continue;   // Before left clip edge
 
-    int idx = v % loopChars;
-    char c = (idx < textLen) ? text[idx] : ' ';
-    if (c != ' ') {
-      canvas.drawChar(charX, y, c, color, COLOR_BG, 1);
+      int idx = v % loopChars;
+      char c = (idx < textLen) ? text[idx] : ' ';
+      if (c != ' ') {
+        canvas.drawChar(charX, y, c, color, COLOR_BG, 1);
+      }
     }
   }
 
   // Hardware clipping gutters:
-  // Clean left gutter between album art (x=101) and text start (x=113)
   const int16_t artRight = 15 + ARTWORK_SIZE;
   if (x > artRight) {
     canvas.fillRect(artRight, y, x - artRight, 12, COLOR_BG);
   }
-  // Clean right gutter between clipRightX (226) and screen right edge (240)
   if (clipRightX < SCREEN_WIDTH) {
     canvas.fillRect(clipRightX, y, SCREEN_WIDTH - clipRightX, 12, COLOR_BG);
   }
@@ -300,17 +277,18 @@ void DisplayUI::render(const TrackInfo &info, uint32_t currentElapsed) {
   if (!info.isRunning || info.state == "stopped") {
     // Idle state
     int16_t idleY = 35;
-    drawScrollingText(tx, idleY, "Apple Music", maxW, COLOR_TEXT, now);
-    drawScrollingText(tx, idleY + 18, "Ready / Idle", maxW, COLOR_MUTED, now);
-    drawScrollingText(tx, idleY + 36, "No track playing", maxW, COLOR_MUTED, now);
-  } else {
-    // Check if track changed to reset scroll animation cycle
-    if (info.title != lastTrackTitle || info.artist != lastTrackArtist) {
-      lastTrackTitle = info.title;
-      lastTrackArtist = info.artist;
-      trackStartTime = now;
-    }
+    canvas.setTextSize(1);
+    canvas.setTextColor(COLOR_TEXT);
+    canvas.setCursor(tx, idleY);
+    canvas.print("Apple Music");
 
+    canvas.setTextColor(COLOR_MUTED);
+    canvas.setCursor(tx, idleY + 18);
+    canvas.print("Ready / Idle");
+
+    canvas.setCursor(tx, idleY + 36);
+    canvas.print("No track playing");
+  } else {
     bool hasAlbum = (info.album.length() > 0 && info.album != info.title);
 
     // Dynamic vertical layout:
@@ -318,17 +296,17 @@ void DisplayUI::render(const TrackInfo &info, uint32_t currentElapsed) {
     // Without album: Title at 40, Artist at 60
     int16_t y = hasAlbum ? 34 : 40;
 
-    // Title (1 line, white, 10s infinite forward marquee)
-    drawScrollingText(tx, y, info.title, maxW, COLOR_TEXT, now);
+    // Title (1 line, white, 10s independent forward marquee)
+    drawScrollingText(tx, y, info.title, maxW, COLOR_TEXT, titleScroller, now);
     y += hasAlbum ? 18 : 20;
 
-    // Artist (1 line, white, 10s infinite forward marquee)
-    drawScrollingText(tx, y, info.artist, maxW, COLOR_TEXT, now);
+    // Artist (1 line, white, 10s independent forward marquee)
+    drawScrollingText(tx, y, info.artist, maxW, COLOR_TEXT, artistScroller, now);
     y += 17;
 
-    // Album (1 line, muted gray, 10s infinite forward marquee)
+    // Album (1 line, muted gray, 10s independent forward marquee)
     if (hasAlbum) {
-      drawScrollingText(tx, y, info.album, maxW, COLOR_MUTED, now);
+      drawScrollingText(tx, y, info.album, maxW, COLOR_MUTED, albumScroller, now);
     }
   }
 
