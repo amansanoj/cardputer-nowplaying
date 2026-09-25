@@ -65,43 +65,28 @@ int16_t DisplayUI::calculateScrollOffset(const String &text, int16_t maxW, unsig
     return 0; // Text fits inside column, no scrolling needed
   }
 
-  int16_t overflow = textW - maxW;
+  const int16_t gapSpaces = 5;
+  int16_t loopW = (text.length() + gapSpaces) * 6;
 
-  // Normal app marquee timing (Pause -> Smooth Scroll -> Pause -> Smooth Return)
-  const unsigned long PAUSE_START = 2200; // Hold at start for 2.2s so user can read
-  const unsigned long SCROLL_SPEED = 50;  // 50ms per pixel (20 px/sec smooth scroll)
-  const unsigned long PAUSE_END = 2000;   // Hold at end for 2.0s so user can read conclusion
-  const unsigned long RETURN_SPEED = 30;  // 30ms per pixel (smooth ping-pong return)
+  // Infinite forward scroll: hold at start for 10 seconds, then scroll forward 1 full loop
+  const unsigned long PAUSE_INTERVAL = 10000; // 10 seconds stationary pause
+  const unsigned long SCROLL_SPEED = 40;      // 40ms per pixel smooth forward glide
 
-  unsigned long scrollFwdDuration = (unsigned long)overflow * SCROLL_SPEED;
-  unsigned long returnDuration = (unsigned long)overflow * RETURN_SPEED;
-  unsigned long totalCycle = PAUSE_START + scrollFwdDuration + PAUSE_END + returnDuration;
+  unsigned long scrollDuration = (unsigned long)loopW * SCROLL_SPEED;
+  unsigned long totalCycle = PAUSE_INTERVAL + scrollDuration;
 
   unsigned long elapsed = now - trackStartTime;
   unsigned long cycleTime = elapsed % totalCycle;
 
-  // Phase 1: Static at beginning
-  if (cycleTime < PAUSE_START) {
+  // Hold stationary at start for 10 seconds
+  if (cycleTime < PAUSE_INTERVAL) {
     return 0;
   }
-  cycleTime -= PAUSE_START;
 
-  // Phase 2: Smooth forward scroll to reveal chopped text
-  if (cycleTime < scrollFwdDuration) {
-    return (int16_t)(cycleTime / SCROLL_SPEED);
-  }
-  cycleTime -= scrollFwdDuration;
-
-  // Phase 3: Static at end
-  if (cycleTime < PAUSE_END) {
-    return overflow;
-  }
-  cycleTime -= PAUSE_END;
-
-  // Phase 4: Smooth return to start (ping-pong)
-  int16_t returnPx = (int16_t)(cycleTime / RETURN_SPEED);
-  int16_t offset = overflow - returnPx;
-  if (offset < 0) offset = 0;
+  // Scroll forward in one direction
+  unsigned long scrollTime = cycleTime - PAUSE_INTERVAL;
+  int16_t offset = (int16_t)(scrollTime / SCROLL_SPEED);
+  if (offset >= loopW) offset = 0;
   return offset;
 }
 
@@ -120,23 +105,34 @@ void DisplayUI::drawScrollingText(int16_t x, int16_t y, const String &text,
     return;
   }
 
-  // Case 2: Overflows available space -> smooth marquee
+  // Case 2: Overflows available space -> infinite forward scroll every 10s
   int16_t offset = calculateScrollOffset(text, maxW, now);
   int16_t clipRightX = x + maxW;
+
+  const int16_t gapSpaces = 5;
+  int16_t textLen = text.length();
+  int16_t loopChars = textLen + gapSpaces;
+  int16_t loopW = loopChars * 6;
+
+  int16_t effectiveOffset = offset % loopW;
 
   canvas.setTextSize(1);
   canvas.setTextColor(color);
 
-  int len = text.length();
-  for (int i = 0; i < len; i++) {
-    int16_t charX = x - offset + (i * 6);
-    // Skip characters completely to the left
-    if (charX + 6 <= x) continue;
-    // Stop once characters reach the right clipping edge
-    if (charX >= clipRightX) break;
+  // Determine starting virtual index v based on offset
+  int startV = effectiveOffset / 6;
+  if (startV > 0) startV--; // margin for partial rendering
 
-    // Draw single character with black background
-    canvas.drawChar(charX, y, text[i], color, COLOR_BG, 1);
+  for (int v = startV;; v++) {
+    int16_t charX = x - effectiveOffset + (v * 6);
+    if (charX >= clipRightX) break; // Reached right clip edge
+    if (charX + 6 <= x) continue;   // Before left clip edge
+
+    int idx = v % loopChars;
+    char c = (idx < textLen) ? text[idx] : ' ';
+    if (c != ' ') {
+      canvas.drawChar(charX, y, c, color, COLOR_BG, 1);
+    }
   }
 
   // Hardware clipping gutters:
