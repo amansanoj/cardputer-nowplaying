@@ -469,7 +469,7 @@ def get_local_ip():
 
 def main():
     parser = argparse.ArgumentParser(description="Apple Music ESP32 Companion Bridge")
-    parser.add_argument("--port", type=int, default=5001, help="HTTP server port (default: 5001)")
+    parser.add_argument("--port", type=int, default=58329, help="HTTP server port (default: 58329)")
     parser.add_argument("--host", type=str, default="0.0.0.0", help="Listen host (default: 0.0.0.0)")
     args = parser.parse_args()
 
@@ -482,7 +482,7 @@ def main():
     print(f" * Mac Local IP        : http://{local_ip}:{args.port}")
     print(f" * For Wokwi Simulator : http://host.wokwi.internal:{args.port}")
     print(f" * Metadata Endpoint   : http://host.wokwi.internal:{args.port}/api/now-playing")
-    print(f" * Artwork RGB565      : http://host.wokwi.internal:{args.port}/artwork.raw (90x90 px)")
+    print(f" * Artwork RGB565      : http://host.wokwi.internal:{args.port}/artwork.raw (86x86 px)")
     print("=" * 60)
     print(" Press Ctrl+C to stop.\n")
 

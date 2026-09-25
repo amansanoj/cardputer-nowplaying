@@ -7,16 +7,16 @@ A lightweight local service that interfaces natively with macOS `Music.app` via 
 - **Fast & Responsive**: JXA queries execute in < 50ms with sub-second polling support.
 - **ESP32-Optimized Binary Artwork**: Generates raw 86x86 16-bit RGB565 binary buffers (`/artwork.raw`, 14,792 bytes) for instant zero-copy DMA/SPI rendering without JPEG decode CPU overhead.
 - **Smart Change Detection**: Provides an `artwork_id` in `/api/now-playing` so the ESP32 only downloads artwork when the track actually changes.
-- **Live Web Dashboard**: Visit `http://localhost:5001/` in your browser for a live preview of the metadata, thumbnail, and simulator target endpoints.
+- **Live Web Dashboard**: Visit `http://localhost:58329/` in your browser for a live preview of the metadata, thumbnail, and simulator target endpoints.
 
 ## Running the Bridge
 ```bash
 python3 host-companion/bridge.py
 ```
-By default, the server runs on port `5001` (to avoid macOS AirPlay Receiver on port 5000):
+By default, the server runs on dedicated obscure port `58329` (conflict-free, avoiding Apple AirPlay Receiver on 5000 and standard HTTP ports):
 ```bash
 # Optional custom port:
-python3 host-companion/bridge.py --port 8080
+python3 host-companion/bridge.py --port 58329
 ```
 
 ## Available Endpoints
@@ -41,7 +41,8 @@ python3 host-companion/bridge.py --port 8080
 ## Connecting from Wokwi Simulator
 In Wokwi's virtual WiFi environment (`Wokwi-GUEST`), connect to your Mac using:
 ```
-http://host.wokwi.internal:5001/api/now-playing
-http://host.wokwi.internal:5001/artwork.raw
+http://host.wokwi.internal:58329/api/now-playing
+http://host.wokwi.internal:58329/artwork.raw
 ```
-*(On physical hardware, replace `host.wokwi.internal` with your Mac's LAN IP address, e.g., `192.168.1.50`).*
+*(On physical hardware, the device connects to your Mac's LAN IP address on port `58329`, e.g., `http://192.168.1.150:58329`).*
+
