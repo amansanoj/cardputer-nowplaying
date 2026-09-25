@@ -300,12 +300,30 @@ void ConfigManager::runSetupPortal(DisplayUI& ui, AppConfig& config) {
     server.send(302, "text/plain", "");
   });
 
-  server.begin();
+#if defined(TARGET_WOKWI_SIMULATOR)
+  unsigned long simSetupStart = millis();
+#endif
 
   // Run captive loop until user submits or provides Serial command
   while (!configSaved) {
     dnsServer.processNextRequest();
     server.handleClient();
+
+#if defined(TARGET_WOKWI_SIMULATOR)
+    // In Wokwi simulator, display the setup screen for 4 seconds,
+    // then automatically apply simulator defaults so testing is seamless!
+    if (millis() - simSetupStart > 4000) {
+      Serial.println("[Setup] Wokwi Simulator: Auto-applying default configuration...");
+      config.wifiSsid = WOKWI_DEFAULT_SSID;
+      config.wifiPassword = WOKWI_DEFAULT_PASS;
+      config.macHost = WOKWI_DEFAULT_HOST;
+      config.port = DEFAULT_PORT;
+      config.isConfigured = true;
+      save(config);
+      configSaved = true;
+      break;
+    }
+#endif
 
     // Check for Serial input: SET:SSID,PASSWORD,MAC_LAN_IP or DEFAULT
     if (Serial.available()) {
