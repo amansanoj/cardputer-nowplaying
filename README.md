@@ -1,7 +1,7 @@
 # Cardputer Now Playing
 A minimalist, zero-flicker wireless display for Apple Music on macOS built for the **M5Stack Cardputer**, **Cardputer-Adv**, and **ESP32-S3**.
 
-![Demo](Untitled%20design.gif)
+![Demo](demo.gif)
 
 ## Index
 - [Live Demo](#live-demo)
@@ -39,7 +39,7 @@ Once running:
 ## Project Structure
 ```text
 .
-├── Untitled design.gif     # Product demo preview
+├── demo.gif                # Product demo preview
 ├── diagram.json            # Wokwi simulation circuit (ESP32-S3 + ST7789)
 ├── wokwi.toml              # Wokwi simulation configuration
 ├── host-companion/
