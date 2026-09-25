@@ -104,134 +104,277 @@ void ConfigManager::runSetupPortal(DisplayUI& ui, AppConfig& config) {
   // Root Setup Page
   server.on("/", HTTP_GET, [&]() {
     String html = R"rawliteral(<!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Cardputer Setup</title>
-  <style>
-    * { box-sizing: border-box; margin: 0; padding: 0; }
-    body {
-      background: #000000;
-      color: #FFFFFF;
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-      padding: 24px;
-      display: flex;
-      justify-content: center;
-    }
-    .card {
-      max-width: 400px;
-      width: 100%;
-      background: #111111;
-      border: 1px solid #282828;
-      border-radius: 12px;
-      padding: 24px;
-      box-shadow: 0 8px 30px rgba(0,0,0,0.8);
-    }
-    h1 { font-size: 19px; font-weight: 700; margin-bottom: 6px; letter-spacing: -0.5px; }
-    p.sub { font-size: 13px; color: #888888; margin-bottom: 22px; }
-    label { display: block; font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.8px; color: #AAAAAA; margin-bottom: 6px; }
-    input, select {
-      width: 100%;
-      padding: 12px 14px;
-      background: #1A1A1A;
-      border: 1px solid #333333;
-      border-radius: 8px;
-      color: #FFFFFF;
-      font-size: 14px;
-      margin-bottom: 16px;
-      outline: none;
-      transition: border-color 0.2s;
-    }
-    input:focus, select:focus { border-color: #FFFFFF; }
-    .toggle-pass { display: flex; align-items: center; gap: 8px; font-size: 12px; color: #888888; margin-top: -10px; margin-bottom: 16px; cursor: pointer; }
-    button {
-      width: 100%;
-      padding: 13px;
-      background: #FFFFFF;
-      color: #000000;
-      border: none;
-      border-radius: 8px;
-      font-size: 15px;
-      font-weight: 600;
-      cursor: pointer;
-      margin-top: 10px;
-      transition: opacity 0.2s;
-    }
-    button:hover { opacity: 0.9; }
-    .footer { margin-top: 20px; font-size: 11px; color: #555555; text-align: center; }
-  </style>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Now Playing Setup</title>
+<style>
+  @import url('https://cdn.jsdelivr.net/npm/@amansanoj/brand/globals.css');
+
+  :root {
+    --background: #000000;
+    --text: #ffffff;
+    --card: #111111;
+    --border: #282828;
+    --radius: 8px;
+    --primary: #ffffff;
+    --primary-foreground: #000000;
+    --muted-foreground: #888888;
+    --accent: #00ff88;
+    --font-body: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    --font-display: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; }
+
+  body {
+    font-family: var(--font-body);
+    background: var(--background);
+    color: var(--text);
+    min-height: 100%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 32px 20px;
+    padding-top: calc(32px + env(safe-area-inset-top, 0px));
+    padding-bottom: calc(32px + env(safe-area-inset-bottom, 0px));
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .card {
+    width: 100%;
+    max-width: 380px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    text-align: center;
+    gap: 26px;
+  }
+
+  .identity {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .name {
+    font-family: var(--font-display);
+    font-size: 1.7rem;
+    font-weight: 600;
+    letter-spacing: -0.02em;
+    line-height: 1.15;
+  }
+
+  form {
+    width: 100%;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+
+  .field {
+    text-align: left;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--card);
+    padding: 10px 16px 12px;
+    transition: border-color 0.15s ease;
+  }
+
+  .field:focus-within {
+    border-color: var(--accent);
+  }
+
+  .field label {
+    display: block;
+    font-family: var(--font-mono);
+    font-size: 0.7rem;
+    color: var(--muted-foreground);
+    margin-bottom: 3px;
+  }
+
+  .field input,
+  .field select {
+    width: 100%;
+    border: none;
+    background: transparent;
+    color: var(--text);
+    font-family: var(--font-body);
+    font-size: 0.95rem;
+    font-weight: 500;
+    outline: none;
+    appearance: none;
+  }
+
+  .field select {
+    cursor: pointer;
+  }
+
+  .pass-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+
+  .pass-row input { flex: 1; }
+
+  .toggle-pass {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-family: var(--font-mono);
+    font-size: 0.7rem;
+    color: var(--muted-foreground);
+    cursor: pointer;
+    user-select: none;
+    white-space: nowrap;
+  }
+
+  .toggle-pass input {
+    width: auto;
+    accent-color: var(--accent);
+  }
+
+  button {
+    width: 100%;
+    padding: 15px 20px;
+    background: var(--primary);
+    color: var(--primary-foreground);
+    border: none;
+    border-radius: var(--radius);
+    font-family: var(--font-body);
+    font-weight: 600;
+    font-size: 1rem;
+    cursor: pointer;
+    margin-top: 6px;
+    transition: opacity 0.15s ease;
+  }
+
+  button:hover { opacity: 0.9; }
+
+  button:focus-visible,
+  .field:has(input:focus-visible),
+  .field:has(select:focus-visible) {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+  }
+
+  .status {
+    font-family: var(--font-mono);
+    font-size: 0.7rem;
+    color: var(--muted-foreground);
+    min-height: 1em;
+  }
+
+  .status.ok { color: var(--accent); }
+
+  @media (prefers-reduced-motion: reduce) {
+    .field, button { transition: none; }
+  }
+</style>
+<script>
+  (function () {
+    var isDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+    document.documentElement.classList.toggle('dark', isDark);
+  })();
+</script>
 </head>
 <body>
   <div class="card">
-    <h1>Now Playing Setup</h1>
-    <p class="sub">Configure your Wi-Fi and macOS Companion Bridge</p>
-    <form action="/save" method="POST">
-      <label>Select Wi-Fi Network</label>
-      <select id="ssid_select" onchange="checkManualSSID()">
-        <option value="">-- Choose Scanned Network --</option>
+    <div class="identity">
+      <div class="name">Cardputer Now Playing Setup</div>
+    </div>
+
+    <form onsubmit="handleSubmit(event)">
+      <div class="field">
+        <label for="ssid_select">Wi-Fi network</label>
+        <select id="ssid_select" onchange="checkManualSSID()">
 )rawliteral";
 
     html += networkOptions;
 
     html += R"rawliteral(
-        <option value="__custom__">Manual Entry / Other...</option>
-      </select>
-
-      <div id="manual_ssid_div" style="display:none;">
-        <label>Manual Wi-Fi SSID</label>
-        <input type="text" id="manual_ssid" name="manual_ssid" placeholder="Network Name">
+          <option value="__custom__">Manual entry&hellip;</option>
+        </select>
       </div>
 
-      <input type="hidden" id="final_ssid" name="ssid">
-
-      <label>Wi-Fi Password</label>
-      <input type="password" id="password" name="password" placeholder="Password (leave blank if open)">
-      <div class="toggle-pass" onclick="togglePass()">
-        <input type="checkbox" id="show_pass" style="width:auto; margin:0;" onclick="event.stopPropagation(); togglePass();">
-        <span>Show Password</span>
+      <div class="field" id="manual_ssid_div" style="display:none;">
+        <label for="manual_ssid">Network name</label>
+        <input type="text" id="manual_ssid" name="manual_ssid" placeholder="Network name">
       </div>
 
-      <label>Mac LAN IP Address</label>
-      <input type="text" name="host" placeholder="e.g. 192.168.1.150" required>
+      <div class="field">
+        <label for="password">Wi-Fi password</label>
+        <div class="pass-row">
+          <input type="password" id="password" name="password" placeholder="Password">
+          <label class="toggle-pass" for="show_pass">
+            <input type="checkbox" id="show_pass" onclick="togglePass()">
+            Show
+          </label>
+        </div>
+      </div>
 
-      <label>Bridge Port (Obscure Default)</label>
-      <input type="number" name="port" value="58329" min="1" max="65535" required>
+      <div class="field">
+        <label for="host">Mac LAN IP address</label>
+        <input type="text" id="host" name="host" placeholder="192.168.1.150" required>
+      </div>
 
-      <button type="submit" onclick="submitForm()">Save & Connect</button>
+      <div class="field">
+        <label for="port">Bridge port</label>
+        <input type="number" id="port" name="port" value="58329" min="1" max="65535" required>
+      </div>
+
+      <button type="submit">Save &amp; connect</button>
+      <div class="status" id="status"></div>
     </form>
-    <div class="footer">Cardputer Now Playing &bull; ST7789 IPS Display</div>
   </div>
 
   <script>
     function checkManualSSID() {
       var sel = document.getElementById("ssid_select");
       var manualDiv = document.getElementById("manual_ssid_div");
-      if (sel.value === "__custom__") {
-        manualDiv.style.display = "block";
-      } else {
-        manualDiv.style.display = "none";
-      }
+      manualDiv.style.display = sel.value === "__custom__" ? "block" : "none";
     }
+
     function togglePass() {
       var passInput = document.getElementById("password");
       var cb = document.getElementById("show_pass");
-      if (passInput.type === "password") {
-        passInput.type = "text";
-        cb.checked = true;
-      } else {
-        passInput.type = "password";
-        cb.checked = false;
-      }
+      passInput.type = cb.checked ? "text" : "password";
     }
-    function submitForm() {
+
+    function handleSubmit(e) {
+      e.preventDefault();
       var sel = document.getElementById("ssid_select");
       var manual = document.getElementById("manual_ssid");
-      var finalInput = document.getElementById("final_ssid");
-      if (sel.value === "__custom__" || sel.value === "") {
-        finalInput.value = manual.value;
-      } else {
-        finalInput.value = sel.value;
-      }
+      var ssid = (sel.value === "__custom__" || !sel.value) ? manual.value : sel.value;
+      var pass = document.getElementById("password").value;
+      var host = document.getElementById("host").value;
+      var port = document.getElementById("port").value;
+
+      var status = document.getElementById("status");
+      status.textContent = "Saving...";
+      status.className = "status";
+
+      var body = "ssid=" + encodeURIComponent(ssid) +
+                 "&password=" + encodeURIComponent(pass) +
+                 "&host=" + encodeURIComponent(host) +
+                 "&port=" + encodeURIComponent(port);
+
+      fetch("/save", {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: body
+      }).then(function(res) {
+        status.textContent = "Saved. Cardputer will reboot and reconnect.";
+        status.classList.add("ok");
+      }).catch(function(err) {
+        status.textContent = "Saved. Cardputer will reboot and reconnect.";
+        status.classList.add("ok");
+      });
     }
   </script>
 </body>
@@ -262,27 +405,7 @@ void ConfigManager::runSetupPortal(DisplayUI& ui, AppConfig& config) {
 
     save(config);
 
-    String resp = R"rawliteral(<!DOCTYPE html>
-<html>
-<head>
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Saved!</title>
-  <style>
-    body { background: #000; color: #FFF; font-family: sans-serif; display: flex; justify-content: center; align-items: center; height: 90vh; text-align: center; }
-    .card { background: #111; border: 1px solid #333; border-radius: 12px; padding: 30px; max-width: 360px; }
-    h2 { font-size: 20px; margin-bottom: 12px; }
-    p { font-size: 14px; color: #AAA; line-height: 1.5; }
-  </style>
-</head>
-<body>
-  <div class="card">
-    <h2>Configuration Saved!</h2>
-    <p>Cardputer is connecting to <b>)rawliteral" + ssid + R"rawliteral(</b>...</p>
-  </div>
-</body>
-</html>)rawliteral";
-
-    server.send(200, "text/html", resp);
+    server.send(200, "text/plain", "OK");
     configSaved = true;
   });
 
