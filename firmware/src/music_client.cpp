@@ -134,3 +134,20 @@ bool MusicClient::fetchArtwork(uint8_t* buffer, size_t bufferSize) {
   Serial.printf("[HTTP] Fetched %u bytes of artwork.\n", bytesRead);
   return (bytesRead >= bufferSize);
 }
+
+bool MusicClient::sendCommand(const String& action) {
+  if (WiFi.status() != WL_CONNECTED || serverBaseUrl.length() == 0) {
+    return false;
+  }
+
+  String url = serverBaseUrl + "/api/" + action;
+  httpClient.begin(wifiClient, url);
+  httpClient.setTimeout(2000);
+
+  int httpCode = httpClient.POST("");
+  bool success = (httpCode == HTTP_CODE_OK);
+  httpClient.end();
+
+  Serial.printf("[HTTP] Command '%s' result: %d\n", action.c_str(), httpCode);
+  return success;
+}

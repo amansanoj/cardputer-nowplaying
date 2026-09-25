@@ -43,9 +43,28 @@ class MusicBridge:
             "artwork_id": "none"
         }
         self.raw_rgb565 = self._generate_default_rgb565()
-        self.jpeg_data = b""
         self.last_query_time = 0
         self.cached_query = None
+
+    def control_playback(self, action):
+        """Send playback commands to Music.app via AppleScript."""
+        cmd_map = {
+            "play": 'tell application "Music" to play',
+            "pause": 'tell application "Music" to pause',
+            "toggle": 'tell application "Music" to playpause',
+            "playpause": 'tell application "Music" to playpause',
+            "next": 'tell application "Music" to next track',
+            "previous": 'tell application "Music" to previous track',
+        }
+        script = cmd_map.get(action.lower())
+        if not script:
+            return False, "Unknown action"
+        try:
+            subprocess.run(["osascript", "-e", script], check=True, timeout=2)
+            self.cached_query = None
+            return True, "Success"
+        except Exception as e:
+            return False, str(e)
 
     def _generate_default_rgb565(self):
         """Generate a 90x90 black square with a minimalist crisp white music note."""
@@ -332,6 +351,17 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(b"OK")
 
+        elif path in ('/api/toggle', '/api/playpause', '/api/play', '/api/pause', '/api/next', '/api/previous'):
+            action = path.split('/')[-1]
+            success, msg = bridge.control_playback(action)
+            res = {"success": success, "message": msg, "action": action}
+            body = json.dumps(res).encode('utf-8')
+            self.send_response(200 if success else 500)
+            self.send_header('Content-Type', 'application/json; charset=utf-8')
+            self.send_header('Content-Length', str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
         elif path == '/':
             meta = bridge.query_music()
             html = f"""<!DOCTYPE html>
@@ -363,8 +393,8 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
       width: 90%;
     }}
     .art {{
-      width: 90px;
-      height: 90px;
+      width: 86px;
+      height: 86px;
       border-radius: 6px;
       background: #000;
       object-fit: cover;
@@ -412,6 +442,23 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
       margin-top: 6px;
       align-self: flex-start;
     }}
+    .controls {{
+      margin-top: 15px;
+      display: flex;
+      gap: 10px;
+      justify-content: center;
+    }}
+    .btn {{
+      background: #2c2c2e;
+      color: #fff;
+      border: 1px solid #444;
+      padding: 8px 16px;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 13px;
+      text-decoration: none;
+    }}
+    .btn:hover {{ background: #3a3a3c; }}
     .endpoints {{
       margin-top: 20px;
       font-size: 12px;
@@ -423,7 +470,7 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
 </head>
 <body>
   <div class="card">
-    <img class="art" src="/artwork.jpg?{time.time()}" onerror="this.src='data:image/svg+xml;utf8,<svg xmlns=\\'http://www.w3.org/2000/svg\\' width=\\'90\\' height=\\'90\\' viewBox=\\'0 0 90 90\\'><rect width=\\'90\\' height=\\'90\\' fill=\\'%23000\\'/><text x=\\'45\\' y=\\'50\\' font-size=\\'12\\' fill=\\'%23fff\\' text-anchor=\\'middle\\'>NO ART</text></svg>'">
+    <img class="art" src="/artwork.jpg?{time.time()}" onerror="this.src='data:image/svg+xml;utf8,<svg xmlns=\\'http://www.w3.org/2000/svg\\' width=\\'86\\' height=\\'86\\' viewBox=\\'0 0 86 86\\'><rect width=\\'86\\' height=\\'86\\' fill=\\'%23000\\'/><text x=\\'43\\' y=\\'48\\' font-size=\\'12\\' fill=\\'%23fff\\' text-anchor=\\'middle\\'>NO ART</text></svg>'">
     <div class="info">
       <div class="title">{meta.get('title') or 'No Track Playing'}</div>
       <div class="artist">{meta.get('artist') or 'Music.app Idle'}</div>
@@ -432,13 +479,18 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
       <span class="state">{meta.get('state')}</span>
     </div>
   </div>
+  <div class="controls">
+    <a class="btn" href="/api/previous">⏮ Prev</a>
+    <a class="btn" href="/api/toggle">⏯ Play/Pause</a>
+    <a class="btn" href="/api/next">⏭ Next</a>
+  </div>
   <div class="endpoints">
     Endpoints:
     <a href="/api/now-playing" target="_blank">/api/now-playing</a> |
-    <a href="/artwork.raw" target="_blank">/artwork.raw (RGB565)</a> |
+    <a href="/artwork.raw" target="_blank">/artwork.raw (86x86 RGB565)</a> |
     <a href="/artwork.jpg" target="_blank">/artwork.jpg</a>
     <br><br>
-    Wokwi Simulator Target: <code>http://host.wokwi.internal:5001/api/now-playing</code>
+    Wokwi Simulator Target: <code>http://host.wokwi.internal:58329/api/now-playing</code>
   </div>
 </body>
 </html>
@@ -450,6 +502,22 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(body)
 
+        else:
+            self.send_response(404)
+            self.end_headers()
+
+    def do_POST(self):
+        path = self.path.split('?')[0]
+        if path in ('/api/toggle', '/api/playpause', '/api/play', '/api/pause', '/api/next', '/api/previous'):
+            action = path.split('/')[-1]
+            success, msg = bridge.control_playback(action)
+            res = {"success": success, "message": msg, "action": action}
+            body = json.dumps(res).encode('utf-8')
+            self.send_response(200 if success else 500)
+            self.send_header('Content-Type', 'application/json; charset=utf-8')
+            self.send_header('Content-Length', str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
         else:
             self.send_response(404)
             self.end_headers()

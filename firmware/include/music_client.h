@@ -9,6 +9,7 @@ public:
   bool connectWiFi(DisplayUI& ui, const String& ssid, const String& password);
   bool fetchMetadata(TrackInfo& info);
   bool fetchArtwork(uint8_t* buffer, size_t bufferSize);
+  bool sendCommand(const String& action);
 
 private:
   String serverBaseUrl;

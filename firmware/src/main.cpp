@@ -2,17 +2,20 @@
 #include "config.h"
 #include "config_manager.h"
 #include "display_ui.h"
+#include "keyboard_driver.h"
 #include "music_client.h"
 #else
 #include "../include/config.h"
 #include "../include/config_manager.h"
 #include "../include/display_ui.h"
+#include "../include/keyboard_driver.h"
 #include "../include/music_client.h"
 #endif
 
 static DisplayUI ui;
 static MusicClient musicClient;
 static ConfigManager configManager;
+static KeyboardDriver keyboard;
 static AppConfig appConfig;
 static TrackInfo currentTrack;
 
@@ -32,6 +35,9 @@ void setup() {
   Serial.println("==================================================");
   Serial.println(" ESP32-S3 Apple Music Now Playing Display");
   Serial.println("==================================================");
+
+  // Initialize keyboard (TCA8418 on Cardputer-Adv or Serial fallback)
+  keyboard.begin();
 
   // Configure G0 / Boot button (held at boot to enter Setup Mode)
   pinMode(BTN_SETUP_PIN, INPUT_PULLUP);
@@ -77,7 +83,7 @@ void setup() {
 void loop() {
   unsigned long now = millis();
 
-  // Allow entering setup anytime by pressing G0 button or typing "SETUP" in Serial
+  // 1. Check physical G0 / Boot button
   if (digitalRead(BTN_SETUP_PIN) == LOW) {
     delay(50); // debounce
     if (digitalRead(BTN_SETUP_PIN) == LOW) {
@@ -88,22 +94,34 @@ void loop() {
     }
   }
 
-  if (Serial.available()) {
-    String cmd = Serial.readStringUntil('\n');
-    cmd.trim();
-    if (cmd.equalsIgnoreCase("SETUP") || cmd.equalsIgnoreCase("CONFIG")) {
-      Serial.println("[Setup] Setup requested via Serial command.");
+  // 2. Check Keyboard & Serial Keypresses (Space=play/pause, n=next, p=prev, s=setup)
+  char key = keyboard.getKey();
+  if (key != 0) {
+    if (key == ' ') {
+      Serial.println("[Control] Play/Pause toggled!");
+      musicClient.sendCommand("toggle");
+      lastPollTime = 0; // trigger immediate refresh
+    } else if (key == 'n' || key == 'N' || key == '.' || key == '>') {
+      Serial.println("[Control] Next track!");
+      musicClient.sendCommand("next");
+      lastPollTime = 0;
+    } else if (key == 'p' || key == 'P' || key == ',' || key == '<') {
+      Serial.println("[Control] Previous track!");
+      musicClient.sendCommand("previous");
+      lastPollTime = 0;
+    } else if (key == 's' || key == 'S') {
+      Serial.println("[Setup] Setup requested via keyboard.");
       configManager.runSetupPortal(ui, appConfig);
       musicClient.setServer(appConfig.macHost, appConfig.port);
       return;
-    } else if (cmd.equalsIgnoreCase("RESET")) {
+    } else if (key == 'r' || key == 'R') {
+      Serial.println("[Setup] Reset requested. Clearing NVS...");
       configManager.clear();
-      Serial.println("[Setup] Settings erased. Restarting...");
       ESP.restart();
     }
   }
 
-  // 1. Maintain WiFi connection
+  // 3. Maintain WiFi connection
   if (WiFi.status() != WL_CONNECTED) {
     if (!musicClient.connectWiFi(ui, appConfig.wifiSsid, appConfig.wifiPassword)) {
       delay(2000);
@@ -111,7 +129,7 @@ void loop() {
     }
   }
 
-  // 2. Poll server for metadata updates
+  // 4. Poll server for metadata updates
   if (now - lastPollTime >= POLL_INTERVAL_MS || lastPollTime == 0) {
     TrackInfo newInfo;
     if (musicClient.fetchMetadata(newInfo)) {
@@ -142,7 +160,7 @@ void loop() {
     }
   }
 
-  // 3. Smooth local 1-second time interpolation & screen refresh
+  // 5. Smooth local 1-second time interpolation & screen refresh
   if (now - lastRenderTime >= 1000) {
     lastRenderTime = now;
 
