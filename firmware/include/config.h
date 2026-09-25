@@ -67,7 +67,7 @@
 // WI-FI & COMPANION BRIDGE NETWORKING
 // =====================================================================
 #define DEFAULT_PORT 58329
-#define AP_SSID "Cardputer-Setup"
+#define AP_SSID "cardputer-nowplaying-setup"
 #define BTN_SETUP_PIN 0 // GPIO 0 (G0 / Boot button on Cardputer)
 
 // Fallback defaults for Wokwi simulation:
