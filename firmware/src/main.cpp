@@ -77,7 +77,17 @@ void setup() {
 void loop() {
   unsigned long now = millis();
 
-  // Allow entering setup anytime by typing "SETUP" in Serial
+  // Allow entering setup anytime by pressing G0 button or typing "SETUP" in Serial
+  if (digitalRead(BTN_SETUP_PIN) == LOW) {
+    delay(50); // debounce
+    if (digitalRead(BTN_SETUP_PIN) == LOW) {
+      Serial.println("[Setup] G0 button pressed! Entering Setup Mode...");
+      configManager.runSetupPortal(ui, appConfig);
+      musicClient.setServer(appConfig.macHost, appConfig.port);
+      return;
+    }
+  }
+
   if (Serial.available()) {
     String cmd = Serial.readStringUntil('\n');
     cmd.trim();

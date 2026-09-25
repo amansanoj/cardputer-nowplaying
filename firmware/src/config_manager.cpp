@@ -39,17 +39,6 @@ bool ConfigManager::load(AppConfig& config) {
   config.port         = prefs.getUShort("port", DEFAULT_PORT);
   prefs.end();
 
-#if defined(TARGET_WOKWI_SIMULATOR)
-  // In Wokwi simulator, provide instant defaults if not configured
-  if (!config.isConfigured || config.wifiSsid.length() == 0) {
-    config.wifiSsid     = WOKWI_DEFAULT_SSID;
-    config.wifiPassword = WOKWI_DEFAULT_PASS;
-    config.macHost      = WOKWI_DEFAULT_HOST;
-    config.port         = DEFAULT_PORT;
-    config.isConfigured = true;
-  }
-#endif
-
   return config.isConfigured && (config.wifiSsid.length() > 0) && (config.macHost.length() > 0);
 }
 
@@ -318,11 +307,21 @@ void ConfigManager::runSetupPortal(DisplayUI& ui, AppConfig& config) {
     dnsServer.processNextRequest();
     server.handleClient();
 
-    // Check for Serial input: SET:SSID,PASSWORD,MAC_LAN_IP
+    // Check for Serial input: SET:SSID,PASSWORD,MAC_LAN_IP or DEFAULT
     if (Serial.available()) {
       String line = Serial.readStringUntil('\n');
       line.trim();
-      if (line.startsWith("SET:")) {
+      if (line.equalsIgnoreCase("DEFAULT")) {
+        config.wifiSsid = WOKWI_DEFAULT_SSID;
+        config.wifiPassword = WOKWI_DEFAULT_PASS;
+        config.macHost = WOKWI_DEFAULT_HOST;
+        config.port = DEFAULT_PORT;
+        config.isConfigured = true;
+        save(config);
+        configSaved = true;
+        Serial.printf("[Setup] Applied default configuration: SSID=%s, Host=%s:%u\n",
+                      config.wifiSsid.c_str(), config.macHost.c_str(), config.port);
+      } else if (line.startsWith("SET:")) {
         String data = line.substring(4);
         int c1 = data.indexOf(',');
         if (c1 >= 0) {
@@ -336,11 +335,14 @@ void ConfigManager::runSetupPortal(DisplayUI& ui, AppConfig& config) {
             config.isConfigured = true;
             save(config);
             configSaved = true;
-            Serial.printf("[Setup] Config received via Serial for SSID: %s\n", config.wifiSsid.c_str());
+            Serial.printf("[Setup] Config received via Serial: SSID=%s, Host=%s:%u\n",
+                          config.wifiSsid.c_str(), config.macHost.c_str(), config.port);
           }
         }
       } else if (line.equalsIgnoreCase("HELP")) {
-        Serial.println("Usage: SET:SSID,PASSWORD,MAC_LAN_IP");
+        Serial.println("Commands:");
+        Serial.println("  SET:SSID,PASSWORD,MAC_LAN_IP");
+        Serial.println("  DEFAULT (use Wokwi defaults: Wokwi-GUEST / host.wokwi.internal)");
       }
     }
 

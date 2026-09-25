@@ -16,6 +16,13 @@
       "top": 30,
       "left": 300,
       "attrs": {}
+    },
+    {
+      "type": "wokwi-pushbutton",
+      "id": "btn0",
+      "top": 140,
+      "left": -90,
+      "attrs": { "color": "red", "label": "G0 (Setup)" }
     }
   ],
   "connections": [
@@ -25,7 +32,9 @@
     [ "esp:12", "st7789:SCL", "green", [ "h25", "v0" ] ],
     [ "esp:10", "st7789:CS", "purple", [ "h15", "v0" ] ],
     [ "esp:9", "st7789:DC", "blue", [ "h10", "v0" ] ],
-    [ "esp:8", "st7789:RST", "gray", [ "h35", "v0" ] ]
+    [ "esp:8", "st7789:RST", "gray", [ "h35", "v0" ] ],
+    [ "esp:0", "btn0:1.r", "orange", [ "h-20", "v0" ] ],
+    [ "esp:GND.2", "btn0:2.r", "black", [ "h-20", "v0" ] ]
   ],
   "dependencies": {}
 }
