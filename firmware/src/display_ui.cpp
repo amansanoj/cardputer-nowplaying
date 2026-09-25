@@ -6,7 +6,8 @@
 
 DisplayUI::DisplayUI()
     : tft(TFT_CS, TFT_DC, TFT_RST), canvas(SCREEN_WIDTH, SCREEN_HEIGHT),
-      hasArtwork(false) {
+      hasArtwork(false), lastTrackKey(""), sharedPauseStartTime(0),
+      sharedScrollStartTime(0), isSharedScrolling(false) {
   memset(artworkBuffer, 0, sizeof(artworkBuffer));
 }
 
@@ -59,25 +60,38 @@ String DisplayUI::formatTime(uint32_t totalSeconds) {
   return String(buf);
 }
 
+int16_t DisplayUI::getLoopWidth(const String &text, int16_t maxW) {
+  int16_t textW = text.length() * 6;
+  if (textW <= maxW) return 0; // Text fits inside column, no scrolling needed
+  const int16_t gapSpaces = 5;
+  return (text.length() + gapSpaces) * 6;
+}
+
 void DisplayUI::drawScrollingText(int16_t x, int16_t y, const String &text,
-                                  int16_t maxW, uint16_t color, LineScroller &scroller, unsigned long now) {
+                                  int16_t maxW, uint16_t color, int16_t offset) {
   if (text.length() == 0) return;
 
   int16_t textW = text.length() * 6;
+  int16_t clipRightX = x + maxW;
 
-  // Case 1: Fits comfortably in available space
-  if (textW <= maxW) {
-    canvas.setCursor(x, y);
+  // Case 1: Fits comfortably in available space or parked at start
+  if (textW <= maxW || offset == 0) {
+    int maxVisible = maxW / 6;
+    int len = text.length();
     canvas.setTextSize(1);
     canvas.setTextColor(color);
-    canvas.print(text);
+    for (int i = 0; i < len && i <= maxVisible; i++) {
+      int16_t charX = x + (i * 6);
+      if (charX >= clipRightX) break;
+      canvas.drawChar(charX, y, text[i], color, COLOR_BG, 1);
+    }
+    const int16_t artRight = 15 + ARTWORK_SIZE;
+    if (x > artRight) canvas.fillRect(artRight, y, x - artRight, 12, COLOR_BG);
+    if (clipRightX < SCREEN_WIDTH) canvas.fillRect(clipRightX, y, SCREEN_WIDTH - clipRightX, 12, COLOR_BG);
     return;
   }
 
-  // Case 2: Overflows available space -> per-line 10s independent scroll & reset
-  int16_t offset = scroller.getOffset(text, maxW, now);
-  int16_t clipRightX = x + maxW;
-
+  // Case 2: Actively scrolling forward
   const int16_t gapSpaces = 5;
   int16_t textLen = text.length();
   int16_t loopChars = textLen + gapSpaces;
@@ -88,40 +102,24 @@ void DisplayUI::drawScrollingText(int16_t x, int16_t y, const String &text,
   canvas.setTextSize(1);
   canvas.setTextColor(color);
 
-  // If offset == 0 (stationary during the 10s pause), render cleanly from start
-  if (effectiveOffset == 0) {
-    int maxVisible = maxW / 6;
-    for (int i = 0; i < textLen && i <= maxVisible; i++) {
-      int16_t charX = x + (i * 6);
-      if (charX >= clipRightX) break;
-      canvas.drawChar(charX, y, text[i], color, COLOR_BG, 1);
-    }
-  } else {
-    // Scrolling: render wrapping virtual characters
-    int startV = effectiveOffset / 6;
-    if (startV > 0) startV--;
+  int startV = effectiveOffset / 6;
+  if (startV > 0) startV--;
 
-    for (int v = startV;; v++) {
-      int16_t charX = x - effectiveOffset + (v * 6);
-      if (charX >= clipRightX) break; // Reached right clip edge
-      if (charX + 6 <= x) continue;   // Before left clip edge
+  for (int v = startV;; v++) {
+    int16_t charX = x - effectiveOffset + (v * 6);
+    if (charX >= clipRightX) break;
+    if (charX + 6 <= x) continue;
 
-      int idx = v % loopChars;
-      char c = (idx < textLen) ? text[idx] : ' ';
-      if (c != ' ') {
-        canvas.drawChar(charX, y, c, color, COLOR_BG, 1);
-      }
+    int idx = v % loopChars;
+    char c = (idx < textLen) ? text[idx] : ' ';
+    if (c != ' ') {
+      canvas.drawChar(charX, y, c, color, COLOR_BG, 1);
     }
   }
 
-  // Hardware clipping gutters:
   const int16_t artRight = 15 + ARTWORK_SIZE;
-  if (x > artRight) {
-    canvas.fillRect(artRight, y, x - artRight, 12, COLOR_BG);
-  }
-  if (clipRightX < SCREEN_WIDTH) {
-    canvas.fillRect(clipRightX, y, SCREEN_WIDTH - clipRightX, 12, COLOR_BG);
-  }
+  if (x > artRight) canvas.fillRect(artRight, y, x - artRight, 12, COLOR_BG);
+  if (clipRightX < SCREEN_WIDTH) canvas.fillRect(clipRightX, y, SCREEN_WIDTH - clipRightX, 12, COLOR_BG);
 }
 
 void DisplayUI::getBatteryInfo(uint8_t &pct, bool &isCharging) {
@@ -289,24 +287,76 @@ void DisplayUI::render(const TrackInfo &info, uint32_t currentElapsed) {
     canvas.setCursor(tx, idleY + 36);
     canvas.print("No track playing");
   } else {
+    // Reset timer when track changes
+    String currentTrackKey = info.title + "\t" + info.artist + "\t" + info.album;
+    if (currentTrackKey != lastTrackKey) {
+      lastTrackKey = currentTrackKey;
+      sharedPauseStartTime = now;
+      sharedScrollStartTime = 0;
+      isSharedScrolling = false;
+    }
+
     bool hasAlbum = (info.album.length() > 0 && info.album != info.title);
+
+    // Compute loop widths on shared clock
+    int16_t titleLoopW = getLoopWidth(info.title, maxW);
+    int16_t artistLoopW = getLoopWidth(info.artist, maxW);
+    int16_t albumLoopW = hasAlbum ? getLoopWidth(info.album, maxW) : 0;
+    int16_t maxLoopW = max(titleLoopW, max(artistLoopW, albumLoopW));
+
+    const unsigned long PAUSE_DURATION = 10000; // Shared 10-second pause
+    const unsigned long SCROLL_SPEED = 40;      // 40ms per pixel
+    unsigned long maxScrollDuration = (unsigned long)maxLoopW * SCROLL_SPEED;
+
+    if (maxLoopW > 0) {
+      if (!isSharedScrolling) {
+        if (sharedPauseStartTime == 0) sharedPauseStartTime = now;
+        if (now - sharedPauseStartTime >= PAUSE_DURATION) {
+          // Shared 10s timer fired! All lines start scrolling simultaneously!
+          isSharedScrolling = true;
+          sharedScrollStartTime = now;
+        }
+      } else {
+        // Actively scrolling
+        unsigned long scrollElapsed = now - sharedScrollStartTime;
+        if (scrollElapsed >= maxScrollDuration) {
+          // All lines finished their loops! Reset shared 10s timer
+          isSharedScrolling = false;
+          sharedPauseStartTime = now;
+        }
+      }
+    } else {
+      isSharedScrolling = false;
+    }
+
+    auto getLineOffset = [&](int16_t loopW) -> int16_t {
+      if (loopW == 0 || !isSharedScrolling) return 0;
+      unsigned long scrollElapsed = now - sharedScrollStartTime;
+      int16_t offset = (int16_t)(scrollElapsed / SCROLL_SPEED);
+      if (offset >= loopW) return 0; // Parked at start waiting for other lines
+      return offset;
+    };
+
+    int16_t titleOffset = getLineOffset(titleLoopW);
+    int16_t artistOffset = getLineOffset(artistLoopW);
+    int16_t albumOffset = getLineOffset(albumLoopW);
 
     // Dynamic vertical layout:
     // With album: Title at 34, Artist at 52, Album at 69
     // Without album: Title at 40, Artist at 60
     int16_t y = hasAlbum ? 34 : 40;
 
-    // Title (1 line, white, 10s independent forward marquee)
-    drawScrollingText(tx, y, info.title, maxW, COLOR_TEXT, titleScroller, now);
+    // Title (1 line, white, shared synchronized marquee)
+    drawScrollingText(tx, y, info.title, maxW, COLOR_TEXT, titleOffset);
     y += hasAlbum ? 18 : 20;
 
-    // Artist (1 line, white, 10s independent forward marquee)
-    drawScrollingText(tx, y, info.artist, maxW, COLOR_TEXT, artistScroller, now);
+    // Artist (1 line, white, shared synchronized marquee)
+    drawScrollingText(tx, y, info.artist, maxW, COLOR_TEXT, artistOffset);
     y += 17;
 
-    // Album (1 line, muted gray, 10s independent forward marquee)
+    // Album (1 line, muted gray, shared synchronized marquee)
     if (hasAlbum) {
-      drawScrollingText(tx, y, info.album, maxW, COLOR_MUTED, albumScroller, now);
+      drawScrollingText(tx, y, info.album, maxW, COLOR_MUTED, albumOffset);
     }
   }
 
