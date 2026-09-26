@@ -28,12 +28,22 @@ Once running:
 
 ## Features
 - **Zero-Flicker Minimalist UI**: Uses off-screen double-buffered `GFXcanvas16` rendering on a 240x135 ST7789 IPS LCD at 20 FPS (50ms interval).
-- **Dynamic Island Status Header**: Displays Mac-synchronized local clock, live 3-bar Wi-Fi RSSI signal meter, and Cardputer battery percentage with a USB charging indicator (`⚡`).
+- **Curated 60-30-10 Color System**: Built on high-contrast tokens:
+  - **60% Dominant**: Pitch-black canvas (`#050505`), dark header/footer strips (`#0d0d0d`), and main body text (`#e6e6e6`).
+  - **30% Structural**: Brand primary (`#afbdd9`) for screen title `"Now Playing"`, active progress bar, and playhead scrubber.
+  - **10% High-Impact Accents**: Warm secondary (`#f0a133`) for keyboard shortcuts, Wi-Fi signal, and charging bolt; soft accent (`#df9a9e`) for the Dynamic Island pause overlay badge.
+- **Fixed 2-Line Title Layout**: Always reserves two dedicated lines for song title (`y = 24` and `y = 38`), preventing vertical layout shift. Artist (`y = 54`) and Album (`y = 70`) remain strictly anchored.
+- **Symmetric 8px Layout Padding**: Uniform 8px top, bottom, left, and right margins framing a crisp 72×72 square artwork with radius 4 rounded corners and a subtle outline border.
+- **Full-Width Modular Header**: Features synchronized local time on left, `"Now Playing"` in center, and live 3-bar Wi-Fi RSSI meter + battery gauge with charging indicator (`⚡`) on right.
+- **Resilient NTP & Hardware RTC Timekeeping**: Built-in SNTP background synchronization with host companion timestamp fallback. Local RTC continues advancing independently, guaranteeing the header clock never drops to `--:--`.
+- **Standard Control Footer**: Features dedicated control pills with vector icons and tactile keyboard hints (`[P] Prev`, `[<] -10s`, `[Spc] Play/Pause`, `[>] +10s`, `[N] Next`).
+- **Seeking Support**: Built-in 10-second fast-forward and rewind controls communicating with macOS `Music.app`.
 - **Synchronized Shared Clock Marquee**: Overflowing title, artist, and album text lines pause together for 10 seconds, scroll forward simultaneously at 40ms/px, park smoothly upon completion, and reset the shared 10s timer when all lines finish.
-- **Dynamic Island Pause Badge**: When paused, an elegant 16×16px rounded pill overlay with two crisp white pause bars (`❚❚`) appears on the bottom-right corner of the 86×86 artwork, avoiding any text layout shift.
+- **Dynamic Island Pause Badge**: When paused, an elegant 16×16px rounded badge (`#270c0e` with `#df9a9e` border and bars) overlays the bottom-right corner of the artwork.
+- **Minimalist Idle State**: Displays clean `"Not Playing"` in a muted tone when Apple Music is idle or stopped.
 - **First-Boot Captive Portal Onboarding**: On first boot or holding `G0` / pressing `s`, boots into `cardputer-nowplaying-setup` (`http://192.168.4.1`) to scan Wi-Fi networks and save credentials to NVS flash.
-- **Physical Keyboard Controls**: Full Cardputer-Adv keyboard integration via TCA8418 I2C driver (`Space` to toggle, `n`/`>` for next, `p`/`<` for previous, `s` for setup, `r` for factory reset).
-- **Native macOS Companion Bridge**: Zero `pip` dependencies; uses built-in AppleScript (`osascript`) and macOS `sips` to downscale artwork to 86×86 16-bit RGB565 binary buffers (`/artwork.raw`).
+- **Physical Keyboard Controls**: Full Cardputer-Adv keyboard integration via TCA8418 I2C driver and USB Serial fallback.
+- **Native macOS Companion Bridge**: Zero `pip` dependencies; uses built-in AppleScript (`osascript`) and macOS `sips` to downscale artwork to 72×72 16-bit RGB565 binary buffers (`/artwork.raw`).
 - **Dedicated Port 58329**: Uses an obscure high dynamic port to eliminate local network conflicts with macOS AirPlay (port 5000) and standard development ports.
 
 ## Project Structure
@@ -49,17 +59,17 @@ Once running:
 ├── firmware/
 │   ├── platformio.ini      # PlatformIO build configuration (esp32s3 & cardputer-adv)
 │   ├── include/
-│   │   ├── config.h        # Pin assignments, WiFi settings & server endpoints
+│   │   ├── config.h        # Pin assignments, layout metrics & 60-30-10 color tokens
 │   │   ├── config_manager.h# NVS Preferences storage & captive portal onboarding
 │   │   ├── keyboard_driver.h# Cardputer-Adv TCA8418 I2C & matrix driver
-│   │   ├── display_ui.h    # Double-buffered graphics, status bar & marquee
+│   │   ├── display_ui.h    # Double-buffered graphics, standard header & footer
 │   │   ├── music_client.h  # Dynamic HTTP client, playback controls & JSON parser
 │   │   └── arduino_compat.h# Arduino compatibility helpers
 │   └── src/
 │       ├── main.cpp        # Application loop, keyboard handler & render tick
 │       ├── config_manager.cpp# Captive portal web server & DNS responder
 │       ├── keyboard_driver.cpp# I2C TCA8418 keypad controller & serial fallback
-│       ├── display_ui.cpp  # GFXcanvas16 double-buffering, status bar & marquee
+│       ├── display_ui.cpp  # GFXcanvas16 double-buffering, standard header/footer
 │       └── music_client.cpp# Network polling, controls & binary artwork stream
 └── releases/               # Factory and firmware release binaries
 ```
@@ -68,12 +78,14 @@ Once running:
 ## How It Works
 1. **Host Companion (`bridge.py`)**:
    - Queries `Music.app` via AppleScript / JXA every 500ms to fetch track name, artist, album, duration, elapsed time, player state, and local time.
-   - Extracts album art and downscales it to 86×86 px using macOS's built-in `sips` tool.
-   - Converts the thumbnail directly to a 14,792-byte big-endian RGB565 binary buffer (`/artwork.raw`).
-   - Serves metadata at `/api/now-playing` and handles playback control requests (`/api/toggle`, `/api/next`, `/api/previous`).
+   - Extracts album art and downscales it to 72×72 px using macOS's built-in `sips` tool.
+   - Converts the thumbnail directly to a 10,368-byte big-endian RGB565 binary buffer (`/artwork.raw`).
+   - Serves metadata at `/api/now-playing` and handles playback control requests (`/api/toggle`, `/api/next`, `/api/previous`, `/api/forward`, `/api/backward`).
+   - Hosts a companion dashboard with silent client-side JSON polling and asynchronous control buttons.
 
 2. **ESP32 Firmware**:
    - Connects to Wi-Fi using saved credentials from NVS flash (configured via the captive portal).
+   - Syncs real-time clock via NTP and companion bridge epoch timestamps to run local RTC timekeeping.
    - Polls `/api/now-playing` every 3 seconds, caching `artwork_id` to only fetch the binary cover art when the track changes.
    - Runs a 50ms display loop with local 1-second timestamp interpolation for smooth second-by-second progress bar progression.
    - Blits the entire frame buffer to the ST7789 display over SPI in a single burst, eliminating visual tear and flicker.
@@ -97,13 +109,16 @@ Once running:
 ## Physical Controls
 When running on the Cardputer / Cardputer-Adv, you have full playback and device controls directly from the physical keyboard (and via USB Serial monitor):
 
-| Key | Action | Endpoint |
-|---|---|---|
-| **`Space`** | Play / Pause Toggle | `POST /api/toggle` |
-| **`n`** or **`>`** | Next Track | `POST /api/next` |
-| **`p`** or **`<`** | Previous Track | `POST /api/previous` |
-| **`s`** | Re-enter Wi-Fi Setup Portal | Spawns AP mode (`192.168.4.1`) |
-| **`r`** | Factory Reset (Clears NVS flash) | Wipes config & restarts |
+| Key | Action | Endpoint | Footer Pill |
+|---|---|---|---|
+| **`p`** or **`P`** | Previous Track | `POST /api/previous` | `[P] Prev` |
+| **`,`** or **`<`** or **`[`** | Seek Backward (-10s) | `POST /api/backward` | `[<] -10s` |
+| **`Space`** | Play / Pause Toggle | `POST /api/toggle` | `[Spc] Play/Pause` |
+| **`.`** or **`>`** or **`]`** | Seek Forward (+10s) | `POST /api/forward` | `[>] +10s` |
+| **`n`** or **`N`** | Next Track | `POST /api/next` | `[N] Next` |
+| **`s`** or **`G0`** | Re-enter Wi-Fi Setup Portal | Spawns AP mode (`192.168.4.1`) | `[G0] Setup` |
+| **`r`** or **`R`** | Reboot Device (in Setup Screen) | Restarts ESP32 | `[R] Reboot` |
+
 
 ## Local Development
 To build and customize the project locally, ensure you have PlatformIO and Python 3 installed.
