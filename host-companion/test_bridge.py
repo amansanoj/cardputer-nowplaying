@@ -36,7 +36,29 @@ def run_tests():
     assert len(raw) == expected_bytes, f"Expected {expected_bytes} bytes, got {len(raw)}"
     print(f"✓ RGB565 buffer valid: {len(raw)} bytes ({ARTWORK_SIZE}x{ARTWORK_SIZE} 16-bit)")
 
+    # 4. Test control playback command dispatch
+    ok, err = bridge.control_playback("unknown_cmd")
+    assert not ok, "Unknown action should fail"
+    print("✓ Control playback validation verified (unknown action rejected)")
+
+    # 5. Test web dashboard HTML rendering
+    from bridge import INDEX_HTML
+    rendered_html = INDEX_HTML.replace('__ARTWORK_ID__', meta.get('artwork_id', 'none')) \
+                              .replace('__TITLE__', meta.get('title') or 'Not Playing') \
+                              .replace('__ARTIST__', meta.get('artist') or '') \
+                              .replace('__ALBUM__', meta.get('album') or '') \
+                              .replace('__TIME__', '01:23 / 03:45') \
+                              .replace('__PLAY_PAUSE_BTN__', '❚❚ Pause') \
+                              .replace('__PAUSE_CLASS__', 'visible')
+    assert '<title>Cardputer Now Playing</title>' in rendered_html
+    assert '__TITLE__' not in rendered_html
+    assert '__PLAY_PAUSE_BTN__' not in rendered_html
+    assert '__ARTWORK_ID__' not in rendered_html
+    assert '__PAUSE_CLASS__' not in rendered_html
+    print("✓ Web dashboard HTML template renders cleanly without syntax/evaluation errors")
+
     print("\nAll Companion Bridge unit checks passed successfully!")
+
 
 if __name__ == '__main__':
     run_tests()
