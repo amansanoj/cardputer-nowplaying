@@ -80,6 +80,9 @@ void setup() {
   lastRenderTime = 0;
 }
 
+static char activeControlKey = 0;
+static unsigned long activeControlKeyTime = 0;
+
 void loop() {
   unsigned long now = millis();
 
@@ -94,20 +97,39 @@ void loop() {
     }
   }
 
-  // 2. Check Keyboard & Serial Keypresses (Space=play/pause, n=next, p=prev, s=setup)
+  // 2. Check Keyboard & Serial Keypresses:
+  //    Space=play/pause, p=prev, ,/< = seek back, ./> = seek fwd, n=next, s=setup, r=reset
   char key = keyboard.getKey();
   if (key != 0) {
     if (key == ' ') {
       Serial.println("[Control] Play/Pause toggled!");
+      activeControlKey = key;
+      activeControlKeyTime = now;
       musicClient.sendCommand("toggle");
       lastPollTime = 0; // trigger immediate refresh
-    } else if (key == 'n' || key == 'N' || key == '.' || key == '>') {
-      Serial.println("[Control] Next track!");
-      musicClient.sendCommand("next");
-      lastPollTime = 0;
-    } else if (key == 'p' || key == 'P' || key == ',' || key == '<') {
+    } else if (key == 'p' || key == 'P') {
       Serial.println("[Control] Previous track!");
+      activeControlKey = key;
+      activeControlKeyTime = now;
       musicClient.sendCommand("previous");
+      lastPollTime = 0;
+    } else if (key == ',' || key == '<' || key == '[') {
+      Serial.println("[Control] Seek backward (-10s)!");
+      activeControlKey = key;
+      activeControlKeyTime = now;
+      musicClient.sendCommand("backward");
+      lastPollTime = 0;
+    } else if (key == '.' || key == '>' || key == ']') {
+      Serial.println("[Control] Seek forward (+10s)!");
+      activeControlKey = key;
+      activeControlKeyTime = now;
+      musicClient.sendCommand("forward");
+      lastPollTime = 0;
+    } else if (key == 'n' || key == 'N') {
+      Serial.println("[Control] Next track!");
+      activeControlKey = key;
+      activeControlKeyTime = now;
+      musicClient.sendCommand("next");
       lastPollTime = 0;
     } else if (key == 's' || key == 'S') {
       Serial.println("[Setup] Setup requested via keyboard.");
@@ -128,6 +150,9 @@ void loop() {
       return;
     }
   }
+
+  // Compute active key highlight for visual tactile feedback in footer
+  char highlightKey = (now - activeControlKeyTime < 350) ? activeControlKey : 0;
 
   // 4. Poll server for metadata updates
   if (now - lastPollTime >= POLL_INTERVAL_MS || lastPollTime == 0) {
@@ -152,7 +177,7 @@ void loop() {
 
       // Force an immediate frame redraw on fresh poll
       interpolatedElapsed = serverElapsed;
-      ui.render(currentTrack, interpolatedElapsed);
+      ui.render(currentTrack, interpolatedElapsed, highlightKey);
       lastRenderTime = now;
     } else {
       Serial.println("[Poll] Waiting for bridge service...");
@@ -176,9 +201,10 @@ void loop() {
     }
 
     // Render frame to off-screen buffer and push to ST7789
-    ui.render(currentTrack, interpolatedElapsed);
+    ui.render(currentTrack, interpolatedElapsed, highlightKey);
   }
 
   // Yield to RTOS and WiFi stack
   delay(10);
 }
+

@@ -58,15 +58,47 @@
 // =====================================================================
 // DISPLAY & CANVAS CONFIGURATION
 // =====================================================================
-#define SCREEN_WIDTH 240
-#define SCREEN_HEIGHT 135
-#define ARTWORK_SIZE 86
+#define SCREEN_WIDTH        240
+#define SCREEN_HEIGHT       135
+#define HEADER_HEIGHT       16
+#define FOOTER_HEIGHT       17
+#define ARTWORK_SIZE        72
 
-// Strict Minimalist Color Palette (Pure pitch-black & crisp white)
-#define COLOR_BG 0x0000     // Pure Pitch-Black (#000000)
-#define COLOR_TEXT 0xFFFF   // Crisp White (#FFFFFF)
-#define COLOR_MUTED 0x8410  // Subtle Muted Gray (#808080)
-#define COLOR_BAR_BG 0x3186 // Subtle dark gray track (#333333)
+// Modular Layout Metrics (Uniform 8px padding system)
+#define PADDING_LEFT        8
+#define PADDING_RIGHT       8
+#define PADDING_TOP         8  // 8px padding below header divider line (y=16) -> content starts at y=24
+#define CONTENT_START_Y     (HEADER_HEIGHT + PADDING_TOP) // 24
+
+
+
+// =====================================================================
+// 60-30-10 COLOR PALETTE (RGB565)
+// =====================================================================
+// 60% Dominant (Canvas, Structural Containers, Body Text)
+#define COLOR_BG            0x0000 // Deep Canvas Background (#050505 / ST7789 pitch black)
+#define COLOR_HEADER_BG     0x0861 // Header dark strip (#0d0d0d)
+#define COLOR_FOOTER_BG     0x0861 // Footer dark strip (#0d0d0d)
+#define COLOR_DIVIDER       0x18E3 // Subtle divider border (#1a1a1a)
+#define COLOR_CARD_BG       0x0861 // Card surface (#0d0d0d)
+#define COLOR_PILL_BG       0x10A2 // Button pill background (#151515)
+#define COLOR_PILL_BORDER   0x3186 // Button pill border (#333333)
+#define COLOR_TEXT          0xE73C // Main text (#e6e6e6)
+#define COLOR_MUTED         0x8410 // Muted labels & timestamps (#808080)
+#define COLOR_BAR_BG        0x2124 // Track background (#252525)
+
+// 30% Structural Hierarchy & Brand (Primary: #afbdd9)
+#define COLOR_PRIMARY       0xADFB // App Name / Titles / Active Playhead (#afbdd9)
+#define COLOR_PRIMARY_LIGHT 0xDF1D // Primary light shade (#dce2ef)
+#define COLOR_PRIMARY_DIM   0x320D // Primary dark border/bg (#314368)
+
+// 10% High-Impact Accents (Secondary: #f0a133, Accent: #df9a9e)
+#define COLOR_SECONDARY     0xF506 // UI Hints & Keyboard Shortcuts (#f0a133)
+#define COLOR_SECONDARY_DIM 0x59C0 // Secondary dark shade (#5f3a07)
+#define COLOR_ACCENT        0xDCD3 // Pause overlay & alerts (#df9a9e)
+#define COLOR_ACCENT_BG     0x2061 // Accent container background (#270c0e)
+#define COLOR_ACCENT_LIGHT  0xE596 // Accent light shade (#e7b1b4)
+
 
 // =====================================================================
 // WI-FI & COMPANION BRIDGE NETWORKING
