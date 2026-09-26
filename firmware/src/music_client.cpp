@@ -42,6 +42,10 @@ bool MusicClient::connectWiFi(DisplayUI& ui, const String& ssid, const String& p
   if (WiFi.status() == WL_CONNECTED) {
     Serial.printf("[WiFi] Connected! IP: %s\n", WiFi.localIP().toString().c_str());
     ui.renderStatus("WiFi Connected!", "IP: " + WiFi.localIP().toString());
+
+    // Initialize SNTP background synchronization
+    configTime(0, 0, "pool.ntp.org", "time.google.com");
+
     delay(800);
     return true;
   } else {
@@ -87,6 +91,14 @@ bool MusicClient::fetchMetadata(TrackInfo& info) {
   info.elapsed   = doc["elapsed"] | 0;
   info.artworkId = doc["artwork_id"] | "";
   info.clock     = doc["clock"] | "";
+
+  // Synchronize internal hardware RTC from companion bridge timestamp
+  if (doc["epoch"].is<long>()) {
+    long epoch = doc["epoch"].as<long>();
+    long tzOffset = doc["tz_offset"] | 0;
+    timeval tv = { epoch + tzOffset, 0 };
+    settimeofday(&tv, nullptr);
+  }
 
   return true;
 }
