@@ -27,12 +27,13 @@ Once running:
 - In **VS Code** with the **Wokwi Simulator** extension installed, run `Cmd + Shift + P` and choose **Wokwi: Start Simulator** to preview the full display UI in real time.
 
 ## Features
-- **Zero-Flicker Minimalist UI**: Uses off-screen double-buffered `GFXcanvas16` rendering on a 240x135 ST7789 IPS LCD at 20 FPS (50ms interval).
+- **Instant Full-Duplex WebSocket Push (`/ws`)**: Replaces HTTP polling delay with sub-30ms instant state updates. Any play, pause, track change, or seek triggered on macOS or Cardputer updates both the hardware screen and web companion simultaneously with zero delay.
+- **Vertically Centered Typography**: The 4-line text block (`y = 32`, `46`, `62`, `78`) is vertically centered against the 72×72 album art (`y = 24..96`, midpoint `y = 60`), perfectly balanced with 8px top and 10px bottom margins.
+- **Fixed 2-Line Title Layout**: Always reserves two dedicated lines for song title (`y = 32` and `y = 46`), preventing vertical layout shift. Artist (`y = 62`) and Album (`y = 78`) remain strictly anchored.
 - **Curated 60-30-10 Color System**: Built on high-contrast tokens:
   - **60% Dominant**: Pitch-black canvas (`#050505`), dark header/footer strips (`#0d0d0d`), and main body text (`#e6e6e6`).
   - **30% Structural**: Brand primary (`#afbdd9`) for screen title `"Now Playing"`, active progress bar, and playhead scrubber.
   - **10% High-Impact Accents**: Warm secondary (`#f0a133`) for keyboard shortcuts, Wi-Fi signal, and charging bolt; soft accent (`#df9a9e`) for the Dynamic Island pause overlay badge.
-- **Fixed 2-Line Title Layout**: Always reserves two dedicated lines for song title (`y = 24` and `y = 38`), preventing vertical layout shift. Artist (`y = 54`) and Album (`y = 70`) remain strictly anchored.
 - **Symmetric 8px Layout Padding**: Uniform 8px top, bottom, left, and right margins framing a crisp 72×72 square artwork with radius 4 rounded corners and a subtle outline border.
 - **Full-Width Modular Header**: Features synchronized local time on left, `"Now Playing"` in center, and live 3-bar Wi-Fi RSSI meter + battery gauge with charging indicator (`⚡`) on right.
 - **Resilient NTP & Hardware RTC Timekeeping**: Built-in SNTP background synchronization with host companion timestamp fallback. Local RTC continues advancing independently, guaranteeing the header clock never drops to `--:--`.
@@ -40,7 +41,7 @@ Once running:
 - **Seeking Support**: Built-in 10-second fast-forward and rewind controls communicating with macOS `Music.app`.
 - **Synchronized Shared Clock Marquee**: Overflowing title, artist, and album text lines pause together for 10 seconds, scroll forward simultaneously at 40ms/px, park smoothly upon completion, and reset the shared 10s timer when all lines finish.
 - **Dynamic Island Pause Badge**: When paused, an elegant 16×16px rounded badge (`#270c0e` with `#df9a9e` border and bars) overlays the bottom-right corner of the artwork.
-- **Minimalist Idle State**: Displays clean `"Not Playing"` in a muted tone when Apple Music is idle or stopped.
+- **Minimalist Idle State**: Displays clean `"Not Playing"` vertically centered when Apple Music is idle or stopped.
 - **First-Boot Captive Portal Onboarding**: On first boot or holding `G0` / pressing `s`, boots into `cardputer-nowplaying-setup` (`http://192.168.4.1`) to scan Wi-Fi networks and save credentials to NVS flash.
 - **Physical Keyboard Controls**: Full Cardputer-Adv keyboard integration via TCA8418 I2C driver and USB Serial fallback.
 - **Native macOS Companion Bridge**: Zero `pip` dependencies; uses built-in AppleScript (`osascript`) and macOS `sips` to downscale artwork to 72×72 16-bit RGB565 binary buffers (`/artwork.raw`).
@@ -141,21 +142,21 @@ cd firmware && pio run -e cardputer-adv
 4. The virtual ESP32-S3 connects to `Wokwi-GUEST`, queries `http://host.wokwi.internal:58329`, and renders real-time track updates.
 
 ## Flashing Firmware
-Pre-built release binaries are available on the **[GitHub Releases v1.0.0](https://github.com/amansanoj/cardputer-nowplaying/releases/tag/v1.0.0)** page:
+Pre-built release binaries are available on the **[GitHub Releases v3.0.0](https://github.com/amansanoj/cardputer-nowplaying/releases/tag/v3.0.0)** page:
 
-- **`cardputer-adv-v1.0.0-factory.bin`**: Complete all-in-one factory image (bootloader + partition table + boot_app0 + application firmware). Flash directly at offset **`0x0`**.
-- **`cardputer-adv-v1.0.0-firmware.bin`**: Application firmware only (flash at offset `0x10000`).
-- **`wokwi-esp32s3-v1.0.0-firmware.bin`**: Firmware target for Wokwi Simulator or generic ESP32-S3 DevKits.
+- **`cardputer-adv-v3.0.0-factory.bin`**: Complete all-in-one factory image (bootloader + partition table + boot_app0 + application firmware). Flash directly at offset **`0x0`**.
+- **`cardputer-adv-v3.0.0-firmware.bin`**: Application firmware only (flash at offset `0x10000`).
+- **`wokwi-esp32s3-v3.0.0-firmware.bin`**: Firmware target for Wokwi Simulator or generic ESP32-S3 DevKits.
 
 ### Option 1: ESP Web Flasher (Zero Install)
 1. Open [ESP Web Flasher](https://espressif.github.io/esptool-js/) in Chrome or Edge.
 2. Connect your Cardputer via USB and click **Connect** (115200 or 1500000 baud).
-3. Select `cardputer-adv-v1.0.0-factory.bin` at offset **`0x0`**.
+3. Select `cardputer-adv-v3.0.0-factory.bin` at offset **`0x0`**.
 4. Click **Program / Flash**.
 
 ### Option 2: esptool.py
 ```sh
-esptool.py --chip esp32s3 write_flash 0x0000 cardputer-adv-v1.0.0-factory.bin
+esptool.py --chip esp32s3 write_flash 0x0000 cardputer-adv-v3.0.0-factory.bin
 ```
 
 ## Credits & License
