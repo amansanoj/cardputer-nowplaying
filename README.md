@@ -143,4 +143,4 @@ esptool.py --chip esp32s3 write_flash 0x0000 cardputer-adv-v3.0.0-factory.bin
 ```
 
 ## Credits & License
-Created by [Aman Sanoj](https://github.com/amansanoj). Built with Adafruit GFX, Arduino ESP32, and macOS AppleScript. Open-source under the MIT License.
+Built with Adafruit GFX, Arduino ESP32, and macOS AppleScript. Open-source under the MIT License.
