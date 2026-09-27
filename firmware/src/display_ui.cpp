@@ -474,17 +474,20 @@ void DisplayUI::render(const TrackInfo &info, uint32_t currentElapsed, char acti
   const int16_t textRightX = SCREEN_WIDTH - PADDING_RIGHT; // 232
   const int16_t maxW = textRightX - tx;               // 142 pixels wide
 
-  // Top padding of text exactly matches top padding of image (y = 24)
-  const int16_t line1Y = CONTENT_START_Y;       // 24: Title Line 1 (8px padding from header)
-  const int16_t line2Y = line1Y + 14;          // 38: Title Line 2 (Strictly reserved)
-  const int16_t line3Y = line2Y + 16;          // 54: Artist (1 line)
-  const int16_t line4Y = line3Y + 16;          // 70: Album (1 line)
+  // Vertically center 4-line text block with respect to 72x72 artwork:
+  // Artwork spans y = 24..96 (center = 60).
+  // 4-line text block spans y = 32..86 (center = 59), providing clean 8px top
+  // padding and 10px bottom padding relative to the album art.
+  const int16_t line1Y = 32;                   // 32: Title Line 1 (8px padding from art top)
+  const int16_t line2Y = line1Y + 14;          // 46: Title Line 2 (Strictly reserved)
+  const int16_t line3Y = line2Y + 16;          // 62: Artist (1 line)
+  const int16_t line4Y = line3Y + 16;          // 78: Album (1 line, 10px padding from art bottom)
 
   if (!info.isRunning || info.state == "stopped") {
-    // Idle state: just say "Not Playing" in muted tone
+    // Idle state: "Not Playing" vertically centered with respect to artwork
     canvas.setTextSize(1);
     canvas.setTextColor(COLOR_MUTED);
-    canvas.setCursor(tx, line1Y);
+    canvas.setCursor(tx, 56);
     canvas.print("Not Playing");
   } else {
     // Split song title into up to 2 lines
