@@ -4,25 +4,175 @@
 #include "../include/music_client.h"
 #endif
 
-MusicClient::MusicClient() : serverBaseUrl("") {}
+MusicClient::MusicClient()
+  : serverBaseUrl(""),
+    wsUrl(""),
+    wsClient(nullptr),
+    wsConnected(false),
+    hasNewMetadata(false) {
+  stateMux = portMUX_INITIALIZER_UNLOCKED;
+}
+
+MusicClient::~MusicClient() {
+  stopWebSocket();
+}
 
 void MusicClient::setServer(const String& host, uint16_t port) {
   String cleanHost = host;
   cleanHost.trim();
-  if (cleanHost.startsWith("http://") || cleanHost.startsWith("https://")) {
+  if (cleanHost.startsWith("http://")) {
     serverBaseUrl = cleanHost;
+    wsUrl = "ws://" + cleanHost.substring(7);
+  } else if (cleanHost.startsWith("https://")) {
+    serverBaseUrl = cleanHost;
+    wsUrl = "wss://" + cleanHost.substring(8);
   } else {
     serverBaseUrl = "http://" + cleanHost;
+    wsUrl = "ws://" + cleanHost;
   }
+
   int colonIdx = serverBaseUrl.lastIndexOf(':');
   if (colonIdx <= 5 && port > 0) {
     serverBaseUrl += ":" + String(port);
+    wsUrl += ":" + String(port);
   }
-  Serial.printf("[MusicClient] Configured server endpoint: %s\n", serverBaseUrl.c_str());
+  wsUrl += "/ws";
+
+  Serial.printf("[MusicClient] HTTP Endpoint: %s\n", serverBaseUrl.c_str());
+  Serial.printf("[MusicClient] WS Endpoint:   %s\n", wsUrl.c_str());
+
+  if (WiFi.status() == WL_CONNECTED) {
+    startWebSocket();
+  }
+}
+
+void MusicClient::websocketEventHandler(void* handler_args, esp_event_base_t base, int32_t event_id, void* event_data) {
+  MusicClient* self = static_cast<MusicClient*>(handler_args);
+  if (self) {
+    self->handleWsEvent(event_id, event_data);
+  }
+}
+
+void MusicClient::handleWsEvent(int32_t event_id, void* event_data) {
+  esp_websocket_event_data_t* data = (esp_websocket_event_data_t*)event_data;
+  switch (event_id) {
+    case WEBSOCKET_EVENT_CONNECTED:
+      Serial.println("[WS] Connected to Companion WebSocket server!");
+      portENTER_CRITICAL(&stateMux);
+      wsConnected = true;
+      portEXIT_CRITICAL(&stateMux);
+      break;
+
+    case WEBSOCKET_EVENT_DISCONNECTED:
+      Serial.println("[WS] Disconnected from Companion WebSocket server.");
+      portENTER_CRITICAL(&stateMux);
+      wsConnected = false;
+      portEXIT_CRITICAL(&stateMux);
+      break;
+
+    case WEBSOCKET_EVENT_DATA:
+      if (data && data->data_ptr && data->data_len > 0) {
+        // Parse incoming pushed metadata JSON (opcode 0x1 is text frame)
+        JsonDocument doc;
+        DeserializationError err = deserializeJson(doc, data->data_ptr, data->data_len);
+        if (!err) {
+          TrackInfo info;
+          info.isRunning = doc["running"] | false;
+          info.state     = doc["state"] | "stopped";
+          info.title     = doc["title"] | "";
+          info.artist    = doc["artist"] | "";
+          info.album     = doc["album"] | "";
+          info.duration  = doc["duration"] | 0;
+          info.elapsed   = doc["elapsed"] | 0;
+          info.artworkId = doc["artwork_id"] | "";
+          info.clock     = doc["clock"] | "";
+
+          if (doc["epoch"].is<long>()) {
+            long epoch = doc["epoch"].as<long>();
+            long tzOffset = doc["tz_offset"] | 0;
+            timeval tv = { epoch + tzOffset, 0 };
+            settimeofday(&tv, nullptr);
+          }
+
+          portENTER_CRITICAL(&stateMux);
+          latestMetadata = info;
+          hasNewMetadata = true;
+          portEXIT_CRITICAL(&stateMux);
+        }
+      }
+      break;
+
+    case WEBSOCKET_EVENT_ERROR:
+      Serial.println("[WS] WebSocket error encountered.");
+      break;
+
+    default:
+      break;
+  }
+}
+
+void MusicClient::startWebSocket() {
+  if (wsUrl.length() == 0 || WiFi.status() != WL_CONNECTED) {
+    return;
+  }
+
+  stopWebSocket();
+
+  esp_websocket_client_config_t ws_cfg = {};
+  ws_cfg.uri = wsUrl.c_str();
+  ws_cfg.disable_auto_reconnect = false;
+  ws_cfg.buffer_size = 2048;
+  ws_cfg.ping_interval_sec = 10;
+  ws_cfg.pingpong_timeout_sec = 15;
+
+  wsClient = esp_websocket_client_init(&ws_cfg);
+  if (!wsClient) {
+    Serial.println("[WS] Failed to initialize WebSocket client!");
+    return;
+  }
+
+  esp_websocket_register_events(wsClient, WEBSOCKET_EVENT_ANY, MusicClient::websocketEventHandler, this);
+  esp_err_t err = esp_websocket_client_start(wsClient);
+  if (err == ESP_OK) {
+    Serial.printf("[WS] Client started for %s\n", wsUrl.c_str());
+  } else {
+    Serial.printf("[WS] Client start failed (0x%x)\n", err);
+  }
+}
+
+void MusicClient::stopWebSocket() {
+  if (wsClient) {
+    esp_websocket_client_stop(wsClient);
+    esp_websocket_client_destroy(wsClient);
+    wsClient = nullptr;
+  }
+  portENTER_CRITICAL(&stateMux);
+  wsConnected = false;
+  hasNewMetadata = false;
+  portEXIT_CRITICAL(&stateMux);
+}
+
+bool MusicClient::isWsConnected() const {
+  return wsConnected;
+}
+
+bool MusicClient::popTrackUpdate(TrackInfo& info) {
+  bool updated = false;
+  portENTER_CRITICAL(&stateMux);
+  if (hasNewMetadata) {
+    info = latestMetadata;
+    hasNewMetadata = false;
+    updated = true;
+  }
+  portEXIT_CRITICAL(&stateMux);
+  return updated;
 }
 
 bool MusicClient::connectWiFi(DisplayUI& ui, const String& ssid, const String& password) {
   if (WiFi.status() == WL_CONNECTED) {
+    if (!wsConnected && wsClient == nullptr) {
+      startWebSocket();
+    }
     return true;
   }
 
@@ -45,6 +195,9 @@ bool MusicClient::connectWiFi(DisplayUI& ui, const String& ssid, const String& p
 
     // Initialize SNTP background synchronization
     configTime(0, 0, "pool.ntp.org", "time.google.com");
+
+    // Connect WebSocket
+    startWebSocket();
 
     delay(800);
     return true;
@@ -149,6 +302,21 @@ bool MusicClient::fetchArtwork(uint8_t* buffer, size_t bufferSize) {
 }
 
 bool MusicClient::sendCommand(const String& action) {
+  bool wsOk = false;
+  portENTER_CRITICAL(&stateMux);
+  wsOk = (wsClient != nullptr && wsConnected);
+  portEXIT_CRITICAL(&stateMux);
+
+  if (wsOk) {
+    String payload = "{\"action\":\"" + action + "\"}";
+    int sent = esp_websocket_client_send_text(wsClient, payload.c_str(), payload.length(), pdMS_TO_TICKS(100));
+    if (sent > 0) {
+      Serial.printf("[WS] Dispatched command '%s' instantly via WebSocket.\n", action.c_str());
+      return true;
+    }
+  }
+
+  // Fallback to HTTP POST
   if (WiFi.status() != WL_CONNECTED || serverBaseUrl.length() == 0) {
     return false;
   }
@@ -161,6 +329,6 @@ bool MusicClient::sendCommand(const String& action) {
   bool success = (httpCode == HTTP_CODE_OK);
   httpClient.end();
 
-  Serial.printf("[HTTP] Command '%s' result: %d\n", action.c_str(), httpCode);
+  Serial.printf("[HTTP] Command '%s' fallback result: %d\n", action.c_str(), httpCode);
   return success;
 }

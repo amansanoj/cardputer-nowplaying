@@ -106,31 +106,31 @@ void loop() {
       activeControlKey = key;
       activeControlKeyTime = now;
       musicClient.sendCommand("toggle");
-      lastPollTime = 0; // trigger immediate refresh
+      if (!musicClient.isWsConnected()) lastPollTime = 0;
     } else if (key == 'p' || key == 'P') {
       Serial.println("[Control] Previous track!");
       activeControlKey = key;
       activeControlKeyTime = now;
       musicClient.sendCommand("previous");
-      lastPollTime = 0;
+      if (!musicClient.isWsConnected()) lastPollTime = 0;
     } else if (key == ',' || key == '<' || key == '[') {
       Serial.println("[Control] Seek backward (-10s)!");
       activeControlKey = key;
       activeControlKeyTime = now;
       musicClient.sendCommand("backward");
-      lastPollTime = 0;
+      if (!musicClient.isWsConnected()) lastPollTime = 0;
     } else if (key == '.' || key == '>' || key == ']') {
       Serial.println("[Control] Seek forward (+10s)!");
       activeControlKey = key;
       activeControlKeyTime = now;
       musicClient.sendCommand("forward");
-      lastPollTime = 0;
+      if (!musicClient.isWsConnected()) lastPollTime = 0;
     } else if (key == 'n' || key == 'N') {
       Serial.println("[Control] Next track!");
       activeControlKey = key;
       activeControlKeyTime = now;
       musicClient.sendCommand("next");
-      lastPollTime = 0;
+      if (!musicClient.isWsConnected()) lastPollTime = 0;
     } else if (key == 's' || key == 'S') {
       Serial.println("[Setup] Setup requested via keyboard.");
       configManager.runSetupPortal(ui, appConfig);
@@ -154,8 +154,35 @@ void loop() {
   // Compute active key highlight for visual tactile feedback in footer
   char highlightKey = (now - activeControlKeyTime < 350) ? activeControlKey : 0;
 
-  // 4. Poll server for metadata updates
-  if (now - lastPollTime >= POLL_INTERVAL_MS || lastPollTime == 0) {
+  // 4. Check for instantaneous push updates via WebSocket
+  TrackInfo pushedInfo;
+  if (musicClient.popTrackUpdate(pushedInfo)) {
+    currentTrack = pushedInfo;
+    serverElapsed = currentTrack.elapsed;
+    lastPollTime = now;
+
+    // Check if artwork has changed
+    if (currentTrack.isRunning &&
+        currentTrack.state != "stopped" &&
+        currentTrack.artworkId.length() > 0 &&
+        currentTrack.artworkId != cachedArtworkId) {
+
+      Serial.printf("[Artwork] New artwork detected (%s). Downloading...\n", currentTrack.artworkId.c_str());
+      if (musicClient.fetchArtwork(rawArtBuffer, sizeof(rawArtBuffer))) {
+        ui.setArtworkData(rawArtBuffer, sizeof(rawArtBuffer));
+        cachedArtworkId = currentTrack.artworkId;
+      }
+    }
+
+    // Force an immediate frame redraw on pushed update
+    interpolatedElapsed = serverElapsed;
+    ui.render(currentTrack, interpolatedElapsed, highlightKey);
+    lastRenderTime = now;
+  }
+
+  // 5. Polling (3s fallback when WS is offline, 30s heartbeat when WS is active)
+  unsigned long activePollInterval = musicClient.isWsConnected() ? 30000 : POLL_INTERVAL_MS;
+  if (now - lastPollTime >= activePollInterval || lastPollTime == 0) {
     TrackInfo newInfo;
     if (musicClient.fetchMetadata(newInfo)) {
       currentTrack = newInfo;
@@ -180,8 +207,10 @@ void loop() {
       ui.render(currentTrack, interpolatedElapsed, highlightKey);
       lastRenderTime = now;
     } else {
-      Serial.println("[Poll] Waiting for bridge service...");
-      lastPollTime = now - (POLL_INTERVAL_MS - 2000); // Retry sooner on failure
+      if (!musicClient.isWsConnected()) {
+        Serial.println("[Poll] Waiting for bridge service...");
+        lastPollTime = now - (POLL_INTERVAL_MS - 2000); // Retry sooner on failure
+      }
     }
   }
 
