@@ -26,7 +26,10 @@ Once running:
 - In **VS Code** with the **Wokwi Simulator** extension installed, run `Cmd + Shift + P` and choose **Wokwi: Start Simulator** to preview the full display UI in real time.
 
 ## Features
-- **Instant Full-Duplex WebSocket Push (`/ws`)**: Replaces HTTP polling delay with sub-30ms instant state updates. Any play, pause, track change, or seek triggered on macOS or Cardputer updates both the hardware screen and web companion simultaneously with zero delay.
+- **Wireless Bluetooth Low Energy (BLE) Mode**: Physical Cardputer runs on battery and communicates directly with macOS over BLE (`Cardputer-NowPlaying`). Zero Wi-Fi passwords, zero hotspot battery drain, and zero campus network restrictions.
+- **Fast MicroSD Artwork Caching**: Album art is streamed once and saved to the MicroSD card. Subsequent plays load locally in ~4ms without network or BLE latency.
+- **Streamlined Wokwi Simulator**: Direct fast-boot into Wi-Fi mode for instant browser simulation and layout preview without setup screens or delays.
+- **Instant Full-Duplex Controls**: Sub-50ms playback toggle, skip, rewind, and seek from Cardputer's physical keyboard (`Space`, `N`, `P`, `<`, `>`).
 - **Vertically Centered Typography**: The 4-line text block (`y = 32`, `46`, `62`, `78`) is vertically centered against the 72×72 album art (`y = 24..96`, midpoint `y = 60`), perfectly balanced with 8px top and 10px bottom margins.
 - **Fixed 2-Line Title Layout**: Always reserves two dedicated lines for song title (`y = 32` and `y = 46`), preventing vertical layout shift. Artist (`y = 62`) and Album (`y = 78`) remain strictly anchored.
 - **Curated 60-30-10 Color System**: Built on high-contrast tokens:
@@ -126,21 +129,21 @@ cd firmware && pio run -e cardputer-adv
 4. The virtual ESP32-S3 connects to `Wokwi-GUEST`, queries `http://host.wokwi.internal:58329`, and renders real-time track updates.
 
 ## Flashing Firmware
-Pre-built release binaries are available on the **[GitHub Releases v3.1.0](https://github.com/amansanoj/cardputer-nowplaying/releases/tag/v3.1.0)** page:
+Pre-built release binaries are available on the **[GitHub Releases v4.0.0](https://github.com/amansanoj/cardputer-nowplaying/releases/tag/v4.0.0)** page:
 
-- **`cardputer-adv-v3.1.0-factory.bin`**: Complete all-in-one factory image (bootloader + partition table + boot_app0 + application firmware). Flash directly at offset **`0x0`**.
-- **`cardputer-adv-v3.1.0-firmware.bin`**: Application firmware only (flash at offset `0x10000`).
-- **`wokwi-esp32s3-v3.1.0-firmware.bin`**: Firmware target for Wokwi Simulator or generic ESP32-S3 DevKits.
+- **`cardputer-adv-v4.0.0-factory.bin`**: Complete all-in-one factory image (bootloader + partition table + boot_app0 + application firmware). Flash directly at offset **`0x0`**.
+- **`cardputer-adv-v4.0.0-firmware.bin`**: Application firmware only (flash at offset `0x10000`).
+- **`wokwi-esp32s3-v4.0.0-firmware.bin`**: Streamlined firmware target for Wokwi Simulator.
 
 ### Option 1: ESP Web Flasher (Zero Install)
 1. Open [ESP Web Flasher](https://espressif.github.io/esptool-js/) in Chrome or Edge.
 2. Connect your Cardputer via USB and click **Connect** (115200 or 1500000 baud).
-3. Select `cardputer-adv-v3.1.0-factory.bin` at offset **`0x0`**.
+3. Select `cardputer-adv-v4.0.0-factory.bin` at offset **`0x0`**.
 4. Click **Program / Flash**.
 
 ### Option 2: esptool.py
 ```sh
-esptool.py --chip esp32s3 write_flash 0x0000 cardputer-adv-v3.1.0-factory.bin
+esptool.py --chip esp32s3 write_flash 0x0000 cardputer-adv-v4.0.0-factory.bin
 ```
 
 ## Credits & License
