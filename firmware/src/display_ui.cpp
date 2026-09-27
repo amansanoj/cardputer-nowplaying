@@ -504,7 +504,7 @@ void DisplayUI::render(const TrackInfo &info, uint32_t currentElapsed, char acti
       isSharedScrolling = false;
     }
 
-    bool hasAlbum = (info.album.length() > 0 && info.album != info.title);
+    bool hasAlbum = (info.album.length() > 0);
 
     // Compute loop widths on shared clock for all text lines
     int16_t t1LoopW = getLoopWidth(titleLine1, maxW);
