@@ -10,27 +10,32 @@ ArtworkCache::ArtworkCache()
 bool ArtworkCache::begin() {
   Serial.println("[ArtworkCache] Initializing on-device artwork cache...");
 
+#if HAS_SD_CARD
   // 1. Try MicroSD Card on dedicated hardware SPI bus (HSPI)
-  sdSPI.begin(SD_SPI_SCK, SD_SPI_MISO, SD_SPI_MOSI, SD_SPI_CS);
+  if (SD_SPI_SCK >= 0 && SD_SPI_CS >= 0) {
+    sdSPI.begin(SD_SPI_SCK, SD_SPI_MISO, SD_SPI_MOSI, SD_SPI_CS);
 
-  bool sdOk = SD.begin(SD_SPI_CS, sdSPI, 25000000);
-  if (!sdOk && SD_SPI_CS != SD_SPI_CS_ALT) {
-    sdOk = SD.begin(SD_SPI_CS_ALT, sdSPI, 25000000);
-  }
-
-  if (sdOk) {
-    storageType = STORAGE_SD;
-    fsPtr = &SD;
-    uint64_t cardSizeMB = SD.cardSize() / (1024 * 1024);
-    Serial.printf("[ArtworkCache] MicroSD Card mounted successfully! Size: %llu MB\n", cardSizeMB);
-
-    if (!SD.exists("/art")) {
-      SD.mkdir("/art");
+    bool sdOk = SD.begin(SD_SPI_CS, sdSPI, 25000000);
+    if (!sdOk && SD_SPI_CS != SD_SPI_CS_ALT) {
+      sdOk = SD.begin(SD_SPI_CS_ALT, sdSPI, 25000000);
     }
-    return true;
-  }
 
-  Serial.println("[ArtworkCache] MicroSD card not detected. Falling back to LittleFS on flash...");
+    if (sdOk) {
+      storageType = STORAGE_SD;
+      fsPtr = &SD;
+      uint64_t cardSizeMB = SD.cardSize() / (1024 * 1024);
+      Serial.printf("[ArtworkCache] MicroSD Card mounted successfully! Size: %llu MB\n", cardSizeMB);
+
+      if (!SD.exists("/art")) {
+        SD.mkdir("/art");
+      }
+      return true;
+    }
+    Serial.println("[ArtworkCache] MicroSD card not detected in slot. Falling back to LittleFS on flash...");
+  }
+#endif
+
+  Serial.println("[ArtworkCache] Using LittleFS on internal flash...");
 
   // 2. Fallback: LittleFS on internal 8MB flash
   if (LittleFS.begin(true)) {

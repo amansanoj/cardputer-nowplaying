@@ -39,6 +39,17 @@ bool ConfigManager::load(AppConfig& config) {
   config.port         = prefs.getUShort("port", DEFAULT_PORT);
   prefs.end();
 
+#if defined(TARGET_WOKWI_SIMULATOR)
+  if (!config.isConfigured || config.wifiSsid.length() == 0 || config.macHost.length() == 0) {
+    config.isConfigured = true;
+    config.wifiSsid = WOKWI_DEFAULT_SSID;
+    config.wifiPassword = WOKWI_DEFAULT_PASS;
+    config.macHost = WOKWI_DEFAULT_HOST;
+    config.port = DEFAULT_PORT;
+    return true;
+  }
+#endif
+
   return config.isConfigured && (config.wifiSsid.length() > 0) && (config.macHost.length() > 0);
 }
 

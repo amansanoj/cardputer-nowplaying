@@ -59,23 +59,27 @@
 // MicroSD Card SPI Configuration
 // =====================================================================
 #if defined(TARGET_M5_CARDPUTER_ADV)
+#define HAS_SD_CARD   1
 #define SD_SPI_SCK    40
 #define SD_SPI_MISO   39
 #define SD_SPI_MOSI   14
 #define SD_SPI_CS     12
 #define SD_SPI_CS_ALT 5
 #elif defined(TARGET_M5_CARDPUTER)
+#define HAS_SD_CARD   1
 #define SD_SPI_SCK    40
 #define SD_SPI_MISO   39
 #define SD_SPI_MOSI   14
 #define SD_SPI_CS     12
 #define SD_SPI_CS_ALT 12
 #else
-#define SD_SPI_SCK    40
-#define SD_SPI_MISO   39
-#define SD_SPI_MOSI   14
-#define SD_SPI_CS     12
-#define SD_SPI_CS_ALT 12
+// Wokwi Simulator or custom targets without MicroSD hardware (protects TFT_SCLK on GPIO 12)
+#define HAS_SD_CARD   0
+#define SD_SPI_SCK    -1
+#define SD_SPI_MISO   -1
+#define SD_SPI_MOSI   -1
+#define SD_SPI_CS     -1
+#define SD_SPI_CS_ALT -1
 #endif
 
 // =====================================================================
