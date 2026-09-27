@@ -8,7 +8,6 @@ A minimalist, zero-flicker wireless display for Apple Music on macOS built for t
 - [Features](#features)
 - [Project Structure](#project-structure)
 - [How It Works](#how-it-works)
-- [Hardware Pinout](#hardware-pinout)
 - [Physical Controls](#physical-controls)
 - [Local Development](#local-development)
 - [Flashing Firmware](#flashing-firmware)
@@ -90,22 +89,6 @@ Once running:
    - Polls `/api/now-playing` every 3 seconds, caching `artwork_id` to only fetch the binary cover art when the track changes.
    - Runs a 50ms display loop with local 1-second timestamp interpolation for smooth second-by-second progress bar progression.
    - Blits the entire frame buffer to the ST7789 display over SPI in a single burst, eliminating visual tear and flicker.
-
-## Hardware Pinout
-
-| Signal | ESP32-S3 (Wokwi) | M5Stack Cardputer-Adv (K132-Adv) | M5Stack Cardputer v1.x | Description |
-|---|---|---|---|---|
-| **MOSI / SDA** | GPIO 11 | GPIO 35 | GPIO 6 | SPI Display Data |
-| **SCLK / SCL** | GPIO 12 | GPIO 36 | GPIO 8 | SPI Display Clock |
-| **CS** | GPIO 10 | GPIO 37 | GPIO 37 | Display Chip Select |
-| **DC** | GPIO 9 | GPIO 34 | GPIO 4 | Display Data / Command |
-| **RST** | GPIO 8 | GPIO 33 | GPIO 33 | Display Reset |
-| **BL** | N/A | GPIO 38 | GPIO 38 | Backlight Power / Control |
-| **BAT_ADC** | N/A | GPIO 10 | GPIO 10 | Battery Voltage ADC (Ratio 2.0) |
-| **KEYPAD_SDA** | N/A | GPIO 8 | Matrix | TCA8418 I2C Keyboard SDA |
-| **KEYPAD_SCL** | N/A | GPIO 9 | Matrix | TCA8418 I2C Keyboard SCL |
-| **KEYPAD_INT** | N/A | GPIO 11 | Matrix | TCA8418 I2C Keypad Interrupt |
-| **BTN_SETUP** | GPIO 0 | GPIO 0 (G0) | GPIO 0 (G0) | Setup Portal Button |
 
 ## Physical Controls
 When running on the Cardputer / Cardputer-Adv, you have full playback and device controls directly from the physical keyboard (and via USB Serial monitor):
