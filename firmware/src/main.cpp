@@ -4,23 +4,55 @@
 #include "display_ui.h"
 #include "keyboard_driver.h"
 #include "music_client.h"
+#include "artwork_cache.h"
 #else
 #include "../include/config.h"
 #include "../include/config_manager.h"
 #include "../include/display_ui.h"
 #include "../include/keyboard_driver.h"
 #include "../include/music_client.h"
+#include "../include/artwork_cache.h"
 #endif
 
 static DisplayUI ui;
 static MusicClient musicClient;
 static ConfigManager configManager;
 static KeyboardDriver keyboard;
+static ArtworkCache artworkCache;
 static AppConfig appConfig;
 static TrackInfo currentTrack;
 
 static String cachedArtworkId = "";
 static uint8_t rawArtBuffer[ARTWORK_SIZE * ARTWORK_SIZE * 2];
+
+static void updateArtworkIfNeeded(const String& newArtworkId) {
+  if (newArtworkId.length() == 0 || newArtworkId == "none") {
+    return;
+  }
+  if (newArtworkId == cachedArtworkId) {
+    return;
+  }
+
+  // 1. Check on-device cache (MicroSD card or LittleFS flash fallback)
+  if (artworkCache.hasArtwork(newArtworkId)) {
+    Serial.printf("[Artwork] Cache HIT on %s (%s). Loading...\n",
+                  artworkCache.getStorageName(), newArtworkId.c_str());
+    if (artworkCache.loadArtwork(newArtworkId, rawArtBuffer, sizeof(rawArtBuffer))) {
+      ui.setArtworkData(rawArtBuffer, sizeof(rawArtBuffer));
+      cachedArtworkId = newArtworkId;
+      return;
+    }
+  }
+
+  // 2. Cache MISS: Fetch from bridge over network
+  Serial.printf("[Artwork] Cache MISS for %s. Downloading from bridge...\n", newArtworkId.c_str());
+  if (musicClient.fetchArtwork(rawArtBuffer, sizeof(rawArtBuffer))) {
+    ui.setArtworkData(rawArtBuffer, sizeof(rawArtBuffer));
+    cachedArtworkId = newArtworkId;
+    // Persist to MicroSD / LittleFS for instant access next time
+    artworkCache.saveArtwork(newArtworkId, rawArtBuffer, sizeof(rawArtBuffer));
+  }
+}
 
 static unsigned long lastPollTime = 0;
 static unsigned long lastRenderTime = 0;
@@ -46,6 +78,9 @@ void setup() {
   // Initialize double-buffered display
   ui.init();
   ui.renderStatus("Apple Music", "Starting up...");
+
+  // Initialize MicroSD / LittleFS on-device artwork cache
+  artworkCache.begin();
 
   // Load configuration from NVS flash
   bool isConfigured = configManager.load(appConfig);
@@ -163,15 +198,8 @@ void loop() {
 
     // Check if artwork has changed
     if (currentTrack.isRunning &&
-        currentTrack.state != "stopped" &&
-        currentTrack.artworkId.length() > 0 &&
-        currentTrack.artworkId != cachedArtworkId) {
-
-      Serial.printf("[Artwork] New artwork detected (%s). Downloading...\n", currentTrack.artworkId.c_str());
-      if (musicClient.fetchArtwork(rawArtBuffer, sizeof(rawArtBuffer))) {
-        ui.setArtworkData(rawArtBuffer, sizeof(rawArtBuffer));
-        cachedArtworkId = currentTrack.artworkId;
-      }
+        currentTrack.state != "stopped") {
+      updateArtworkIfNeeded(currentTrack.artworkId);
     }
 
     // Force an immediate frame redraw on pushed update
@@ -191,15 +219,8 @@ void loop() {
 
       // Check if artwork has changed
       if (currentTrack.isRunning &&
-          currentTrack.state != "stopped" &&
-          currentTrack.artworkId.length() > 0 &&
-          currentTrack.artworkId != cachedArtworkId) {
-
-        Serial.printf("[Artwork] New artwork detected (%s). Downloading...\n", currentTrack.artworkId.c_str());
-        if (musicClient.fetchArtwork(rawArtBuffer, sizeof(rawArtBuffer))) {
-          ui.setArtworkData(rawArtBuffer, sizeof(rawArtBuffer));
-          cachedArtworkId = currentTrack.artworkId;
-        }
+          currentTrack.state != "stopped") {
+        updateArtworkIfNeeded(currentTrack.artworkId);
       }
 
       // Force an immediate frame redraw on fresh poll

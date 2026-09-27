@@ -44,6 +44,7 @@ Once running:
 - **First-Boot Captive Portal Onboarding**: On first boot or holding `G0` / pressing `s`, boots into `cardputer-nowplaying-setup` (`http://192.168.4.1`) to scan Wi-Fi networks and save credentials to NVS flash.
 - **Physical Keyboard Controls**: Full Cardputer-Adv keyboard integration via TCA8418 I2C driver and USB Serial fallback.
 - **Native macOS Companion Bridge**: Zero `pip` dependencies; uses built-in AppleScript (`osascript`) and macOS `sips` to downscale artwork to 72×72 16-bit RGB565 binary buffers (`/artwork.raw`).
+- **On-Device MicroSD & LittleFS Artwork Caching**: Once an album's 72×72 RGB565 artwork is retrieved from the companion bridge, it is saved directly to the MicroSD card (or internal flash via LittleFS if no SD card is inserted). Subsequent plays load the artwork locally in ~4ms, eliminating network latency and bandwidth overhead.
 - **Dedicated Port 58329**: Uses an obscure high dynamic port to eliminate local network conflicts with macOS AirPlay (port 5000) and standard development ports.
 
 ## Project Structure
@@ -125,21 +126,21 @@ cd firmware && pio run -e cardputer-adv
 4. The virtual ESP32-S3 connects to `Wokwi-GUEST`, queries `http://host.wokwi.internal:58329`, and renders real-time track updates.
 
 ## Flashing Firmware
-Pre-built release binaries are available on the **[GitHub Releases v3.0.0](https://github.com/amansanoj/cardputer-nowplaying/releases/tag/v3.0.0)** page:
+Pre-built release binaries are available on the **[GitHub Releases v3.1.0](https://github.com/amansanoj/cardputer-nowplaying/releases/tag/v3.1.0)** page:
 
-- **`cardputer-adv-v3.0.0-factory.bin`**: Complete all-in-one factory image (bootloader + partition table + boot_app0 + application firmware). Flash directly at offset **`0x0`**.
-- **`cardputer-adv-v3.0.0-firmware.bin`**: Application firmware only (flash at offset `0x10000`).
-- **`wokwi-esp32s3-v3.0.0-firmware.bin`**: Firmware target for Wokwi Simulator or generic ESP32-S3 DevKits.
+- **`cardputer-adv-v3.1.0-factory.bin`**: Complete all-in-one factory image (bootloader + partition table + boot_app0 + application firmware). Flash directly at offset **`0x0`**.
+- **`cardputer-adv-v3.1.0-firmware.bin`**: Application firmware only (flash at offset `0x10000`).
+- **`wokwi-esp32s3-v3.1.0-firmware.bin`**: Firmware target for Wokwi Simulator or generic ESP32-S3 DevKits.
 
 ### Option 1: ESP Web Flasher (Zero Install)
 1. Open [ESP Web Flasher](https://espressif.github.io/esptool-js/) in Chrome or Edge.
 2. Connect your Cardputer via USB and click **Connect** (115200 or 1500000 baud).
-3. Select `cardputer-adv-v3.0.0-factory.bin` at offset **`0x0`**.
+3. Select `cardputer-adv-v3.1.0-factory.bin` at offset **`0x0`**.
 4. Click **Program / Flash**.
 
 ### Option 2: esptool.py
 ```sh
-esptool.py --chip esp32s3 write_flash 0x0000 cardputer-adv-v3.0.0-factory.bin
+esptool.py --chip esp32s3 write_flash 0x0000 cardputer-adv-v3.1.0-factory.bin
 ```
 
 ## Credits & License

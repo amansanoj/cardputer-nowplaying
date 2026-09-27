@@ -56,6 +56,29 @@
 #endif
 
 // =====================================================================
+// MicroSD Card SPI Configuration
+// =====================================================================
+#if defined(TARGET_M5_CARDPUTER_ADV)
+#define SD_SPI_SCK    40
+#define SD_SPI_MISO   39
+#define SD_SPI_MOSI   14
+#define SD_SPI_CS     12
+#define SD_SPI_CS_ALT 5
+#elif defined(TARGET_M5_CARDPUTER)
+#define SD_SPI_SCK    40
+#define SD_SPI_MISO   39
+#define SD_SPI_MOSI   14
+#define SD_SPI_CS     12
+#define SD_SPI_CS_ALT 12
+#else
+#define SD_SPI_SCK    40
+#define SD_SPI_MISO   39
+#define SD_SPI_MOSI   14
+#define SD_SPI_CS     12
+#define SD_SPI_CS_ALT 12
+#endif
+
+// =====================================================================
 // DISPLAY & CANVAS CONFIGURATION
 // =====================================================================
 #define SCREEN_WIDTH        240
