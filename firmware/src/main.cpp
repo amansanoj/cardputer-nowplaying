@@ -64,6 +64,7 @@ void setup() {
   Serial.println("[Wokwi] Connecting directly to Wokwi-GUEST...");
   musicClient.setServer(WOKWI_DEFAULT_HOST, DEFAULT_PORT);
   musicClient.connectWiFi(ui, WOKWI_DEFAULT_SSID, WOKWI_DEFAULT_PASS);
+  ui.render(currentTrack, 0, 0);
 #else
   // Physical Cardputer: Start Bluetooth Low Energy (BLE)
   Serial.println("[Cardputer] Starting Bluetooth Low Energy mode...");
@@ -71,8 +72,8 @@ void setup() {
   bleManager.begin();
 #endif
 
-  lastPollTime = millis();
-  lastRenderTime = millis();
+  lastPollTime = 0;
+  lastRenderTime = 0;
 }
 
 void loop() {

@@ -41,13 +41,21 @@ void KeyboardDriver::writeReg(uint8_t reg, uint8_t val) {
 }
 
 bool KeyboardDriver::begin() {
-  Wire.begin(8, 9, 400000);
+#if defined(TARGET_WOKWI_SIMULATOR)
+  // Wokwi Simulator uses USB Serial keyboard input; do NOT touch pins 8/9 (TFT RST/DC)
+  hardwarePresent = false;
+  Serial.println("[Keyboard] Wokwi Simulator active. Serial keyboard ready.");
+  return false;
+#else
+  // Cardputer-Adv: TCA8418 keypad matrix on dedicated I2C pins (SDA=2, SCL=1)
+  Wire.begin(2, 1, 400000);
   Wire.beginTransmission(TCA8418_I2C_ADDR);
   if (Wire.endTransmission() != 0) {
     Serial.println("[Keyboard] TCA8418 not detected. Serial keyboard fallback active.");
     hardwarePresent = false;
     return false;
   }
+#endif
 
   // Configure 7 rows and 8 columns for keypad scanning
   writeReg(REG_KP_GPIO1, 0x7F);

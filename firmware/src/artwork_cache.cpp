@@ -35,23 +35,7 @@ bool ArtworkCache::begin() {
   }
 #endif
 
-  Serial.println("[ArtworkCache] Using LittleFS on internal flash...");
-
-  // 2. Fallback: LittleFS on internal 8MB flash
-  if (LittleFS.begin(true)) {
-    storageType = STORAGE_LITTLEFS;
-    fsPtr = &LittleFS;
-    Serial.printf("[ArtworkCache] LittleFS mounted on internal flash! Total: %u KB, Used: %u KB\n",
-                  (unsigned int)(LittleFS.totalBytes() / 1024),
-                  (unsigned int)(LittleFS.usedBytes() / 1024));
-
-    if (!LittleFS.exists("/art")) {
-      LittleFS.mkdir("/art");
-    }
-    return true;
-  }
-
-  Serial.println("[ArtworkCache] Warning: No storage system available (SD or LittleFS).");
+  Serial.println("[ArtworkCache] No SD card mounted. Direct stream active.");
   storageType = STORAGE_NONE;
   fsPtr = nullptr;
   return false;
