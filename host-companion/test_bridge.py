@@ -55,7 +55,58 @@ def run_tests():
     assert '__PLAY_PAUSE_BTN__' not in rendered_html
     assert '__ARTWORK_ID__' not in rendered_html
     assert '__PAUSE_CLASS__' not in rendered_html
-    print("✓ Web dashboard HTML template renders cleanly without syntax/evaluation errors")
+    # 6. Test WebSocket frame encoding & decoding
+    from bridge import make_ws_frame, read_ws_frame
+    test_msg = '{"action":"test_ping"}'
+    frame = make_ws_frame(test_msg.encode('utf-8'), opcode=0x1)
+    assert frame[0] == 0x81, "Opcode 1 with FIN must be 0x81"
+    assert frame[1] == len(test_msg), "Frame length must match message length"
+    assert frame[2:] == test_msg.encode('utf-8')
+    print(f"✓ RFC 6455 WebSocket frame encoding verified: {len(frame)} bytes")
+
+    # 7. Test live WebSocket handshake calculation
+    import socket
+    import base64
+    import hashlib
+    import threading
+    import json
+    import time
+    key = "dGhlIHNhbXBsZSBub25jZQ=="
+    accept_str = key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
+    expected_accept = base64.b64encode(hashlib.sha1(accept_str.encode('utf-8')).digest()).decode('utf-8')
+    assert expected_accept == "s3pPLMBiTxaQ9kYGzzhZRbK+xOo=", "RFC 6455 test vector failed"
+    print("✓ RFC 6455 Sec-WebSocket-Accept handshake calculation matches RFC test vector")
+
+    # 8. Test live WebSocket server connection & initial frame delivery
+    from bridge import ThreadingTCPServer, RequestHandler
+    test_port = 58392
+    server = ThreadingTCPServer(('127.0.0.1', test_port), RequestHandler)
+    server_thread = threading.Thread(target=server.serve_forever, daemon=True)
+    server_thread.start()
+    time.sleep(0.2)
+
+    sock = socket.socket()
+    sock.connect(('127.0.0.1', test_port))
+    handshake_req = (
+        f"GET /ws HTTP/1.1\r\n"
+        f"Host: 127.0.0.1:{test_port}\r\n"
+        f"Upgrade: websocket\r\n"
+        f"Connection: Upgrade\r\n"
+        f"Sec-WebSocket-Key: {key}\r\n"
+        f"Sec-WebSocket-Version: 13\r\n\r\n"
+    )
+    sock.sendall(handshake_req.encode())
+    resp = sock.recv(1024)
+    assert b"101 Switching Protocols" in resp
+    assert b"Sec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo=" in resp
+
+    opcode, payload = read_ws_frame(sock)
+    assert opcode == 0x1, f"Expected text frame opcode 1, got {opcode}"
+    received_meta = json.loads(payload.decode('utf-8'))
+    assert "state" in received_meta, "Pushed metadata must include playback state"
+    sock.close()
+    server.shutdown()
+    print("✓ Live WebSocket server handshake and initial metadata frame push verified")
 
     print("\nAll Companion Bridge unit checks passed successfully!")
 

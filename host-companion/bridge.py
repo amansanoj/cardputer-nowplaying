@@ -19,6 +19,9 @@ import subprocess
 import json
 import hashlib
 import struct
+import base64
+import socket
+import threading
 import os
 import sys
 import time
@@ -27,6 +30,69 @@ import argparse
 
 ARTWORK_SIZE = 72  # 72x72 pixels thumbnail
 CACHE_DIR = tempfile.mkdtemp(prefix="cardputer_music_")
+
+
+def make_ws_frame(data: bytes, opcode: int = 0x1) -> bytes:
+    """Create an unmasked RFC 6455 WebSocket frame from server to client."""
+    length = len(data)
+    header = bytearray([0x80 | (opcode & 0x0F)])
+    if length <= 125:
+        header.append(length)
+    elif length <= 65535:
+        header.append(126)
+        header.extend(struct.pack('!H', length))
+    else:
+        header.append(127)
+        header.extend(struct.pack('!Q', length))
+    return bytes(header) + data
+
+
+def read_ws_frame(sock: socket.socket) -> tuple:
+    """Read and decode a masked or unmasked RFC 6455 WebSocket frame."""
+    try:
+        header = sock.recv(2)
+        if len(header) < 2:
+            return 0x8, b""
+        byte1, byte2 = header[0], header[1]
+        opcode = byte1 & 0x0F
+        masked = (byte2 & 0x80) != 0
+        payload_len = byte2 & 0x7F
+
+        if payload_len == 126:
+            ext = sock.recv(2)
+            if len(ext) < 2:
+                return 0x8, b""
+            payload_len = struct.unpack('!H', ext)[0]
+        elif payload_len == 127:
+            ext = sock.recv(8)
+            if len(ext) < 8:
+                return 0x8, b""
+            payload_len = struct.unpack('!Q', ext)[0]
+
+        if masked:
+            mask = sock.recv(4)
+            if len(mask) < 4:
+                return 0x8, b""
+            payload = bytearray()
+            while len(payload) < payload_len:
+                chunk = sock.recv(payload_len - len(payload))
+                if not chunk:
+                    return 0x8, b""
+                payload.extend(chunk)
+            unmasked = bytearray(payload_len)
+            for i in range(payload_len):
+                unmasked[i] = payload[i] ^ mask[i % 4]
+            return opcode, bytes(unmasked)
+        else:
+            payload = bytearray()
+            while len(payload) < payload_len:
+                chunk = sock.recv(payload_len - len(payload))
+                if not chunk:
+                    return 0x8, b""
+                payload.extend(chunk)
+            return opcode, bytes(payload)
+    except (socket.error, OSError):
+        return 0x8, b""
 
 class MusicBridge:
     def __init__(self, art_size=ARTWORK_SIZE):
@@ -48,8 +114,106 @@ class MusicBridge:
             "tz_offset": tz_offset
         }
         self.raw_rgb565 = self._generate_default_rgb565()
+        self.jpeg_data = b""
         self.last_query_time = 0
         self.cached_query = None
+        self.ws_clients = set()
+        self.ws_lock = threading.Lock()
+        self.poller_thread = None
+
+    def start_poller(self):
+        """Start background daemon poller to push state changes over WebSocket."""
+        if self.poller_thread is None:
+            self.poller_thread = threading.Thread(target=self._ws_poller, daemon=True)
+            self.poller_thread.start()
+
+    def _ws_poller(self):
+        while True:
+            time.sleep(0.2)
+            try:
+                with self.ws_lock:
+                    num_clients = len(self.ws_clients)
+                if num_clients > 0:
+                    old_state = self.last_metadata.get("state")
+                    old_track = self.last_metadata.get("artwork_id")
+                    old_elapsed = self.last_metadata.get("elapsed", 0)
+
+                    meta = self.query_music()
+                    new_state = meta.get("state")
+                    new_track = meta.get("artwork_id")
+                    new_elapsed = meta.get("elapsed", 0)
+
+                    # Broadcast on state or track change, or advancing elapsed while playing
+                    if (new_state != old_state or
+                        new_track != old_track or
+                        abs(new_elapsed - old_elapsed) >= 1 or
+                        new_state == "playing"):
+                        self.broadcast_metadata()
+            except Exception:
+                pass
+
+    def broadcast_metadata(self):
+        """Broadcast latest metadata JSON frame to all active WebSocket clients."""
+        with self.ws_lock:
+            if not self.ws_clients:
+                return
+            payload = json.dumps(self.last_metadata).encode('utf-8')
+            frame = make_ws_frame(payload, opcode=0x1)
+            dead_clients = set()
+            for client_sock in list(self.ws_clients):
+                try:
+                    client_sock.sendall(frame)
+                except Exception:
+                    dead_clients.add(client_sock)
+            for dead in dead_clients:
+                self.ws_clients.discard(dead)
+                try:
+                    dead.close()
+                except Exception:
+                    pass
+
+    def handle_ws_client(self, sock: socket.socket):
+        """Handle persistent WebSocket connection from Cardputer or browser."""
+        with self.ws_lock:
+            self.ws_clients.add(sock)
+
+        # Send initial state immediately
+        try:
+            init_payload = json.dumps(self.last_metadata).encode('utf-8')
+            sock.sendall(make_ws_frame(init_payload, opcode=0x1))
+        except Exception:
+            with self.ws_lock:
+                self.ws_clients.discard(sock)
+            return
+
+        while True:
+            opcode, payload = read_ws_frame(sock)
+            if opcode == 0x8:  # Close frame
+                break
+            elif opcode == 0x9:  # Ping frame -> reply Pong
+                try:
+                    sock.sendall(make_ws_frame(payload, opcode=0xA))
+                except Exception:
+                    break
+            elif opcode == 0x1:  # Text frame (e.g. {"action": "toggle"})
+                try:
+                    msg = json.loads(payload.decode('utf-8'))
+                    action = msg.get("action")
+                    if action:
+                        self.control_playback(action)
+                        self.query_music(force=True)
+                        self.broadcast_metadata()
+                except Exception as e:
+                    print(f"[WS] Message handle error: {e}", file=sys.stderr)
+            elif opcode == 0x0:
+                continue
+
+        with self.ws_lock:
+            self.ws_clients.discard(sock)
+        try:
+            sock.close()
+        except Exception:
+            pass
 
     def control_playback(self, action):
         """Send playback commands to Music.app via AppleScript."""
@@ -115,11 +279,11 @@ class MusicBridge:
 
         return bytes(buf)
 
-    def query_music(self):
+    def query_music(self, force=False):
         """Run JXA script to get current track metadata from Music.app."""
         now = time.time()
-        # Rate limit sub-process calls to at most once per 200ms
-        if now - self.last_query_time < 0.2 and self.cached_query:
+        # Rate limit sub-process calls to at most once per 200ms unless forced
+        if not force and (now - self.last_query_time < 0.2) and self.cached_query:
             return self.cached_query
 
         jxa_script = '''
@@ -511,65 +675,93 @@ INDEX_HTML = """<!DOCTYPE html>
     })();
 
     var currentArtId = '__ARTWORK_ID__';
+    var ws = null;
 
-    function updateDashboard() {
-      fetch('/api/now-playing')
-        .then(function(res) { return res.json(); })
-        .then(function(data) {
-          var isPlaying = (data.state === 'playing');
-          var titleEl = document.getElementById('track-title');
-          var artistEl = document.getElementById('track-artist');
-          var albumEl = document.getElementById('track-album');
-          var timeEl = document.getElementById('track-time');
-          var playBtn = document.getElementById('btn-play');
-          var artEl = document.getElementById('track-art');
-          var pauseOverlay = document.getElementById('pause-overlay');
+    function applyData(data) {
+      if (!data) return;
+      var isPlaying = (data.state === 'playing');
+      var titleEl = document.getElementById('track-title');
+      var artistEl = document.getElementById('track-artist');
+      var albumEl = document.getElementById('track-album');
+      var timeEl = document.getElementById('track-time');
+      var playBtn = document.getElementById('btn-play');
+      var artEl = document.getElementById('track-art');
+      var pauseOverlay = document.getElementById('pause-overlay');
 
-          if (titleEl) titleEl.textContent = data.title || (isPlaying ? 'Unknown Track' : 'Not Playing');
-          if (artistEl) artistEl.textContent = data.artist || '';
-          if (albumEl) albumEl.textContent = data.album || '';
+      if (titleEl) titleEl.textContent = data.title || (isPlaying ? 'Unknown Track' : 'Not Playing');
+      if (artistEl) artistEl.textContent = data.artist || '';
+      if (albumEl) albumEl.textContent = data.album || '';
 
-          var el = data.elapsed || 0;
-          var du = data.duration || 0;
-          var pad = function(n) { return (n < 10 ? '0' : '') + n; };
-          var timeStr = pad(Math.floor(el / 60)) + ':' + pad(el % 60) + ' / ' + pad(Math.floor(du / 60)) + ':' + pad(du % 60);
-          if (timeEl) timeEl.textContent = timeStr;
+      var el = data.elapsed || 0;
+      var du = data.duration || 0;
+      var pad = function(n) { return (n < 10 ? '0' : '') + n; };
+      var timeStr = pad(Math.floor(el / 60)) + ':' + pad(el % 60) + ' / ' + pad(Math.floor(du / 60)) + ':' + pad(du % 60);
+      if (timeEl) timeEl.textContent = timeStr;
 
-          // Pause overlay badge on album art
-          if (pauseOverlay) {
-            if (data.state === 'paused') {
-              pauseOverlay.classList.add('visible');
-            } else {
-              pauseOverlay.classList.remove('visible');
-            }
-          }
+      // Pause overlay badge on album art
+      if (pauseOverlay) {
+        if (data.state === 'paused') {
+          pauseOverlay.classList.add('visible');
+        } else {
+          pauseOverlay.classList.remove('visible');
+        }
+      }
 
-          if (playBtn) {
-            playBtn.textContent = isPlaying ? '❚❚ Pause' : '▶ Play';
-          }
+      if (playBtn) {
+        playBtn.textContent = isPlaying ? '❚❚ Pause' : '▶ Play';
+      }
 
-          // ONLY update artwork if artwork_id actually changes!
-          if (artEl && data.artwork_id && data.artwork_id !== currentArtId) {
-            currentArtId = data.artwork_id;
-            artEl.src = '/artwork.jpg?id=' + encodeURIComponent(currentArtId);
-          }
-        })
-        .catch(function(err) {
-          console.debug('Sync status:', err);
-        });
+      // ONLY update artwork if artwork_id actually changes!
+      if (artEl && data.artwork_id && data.artwork_id !== currentArtId) {
+        currentArtId = data.artwork_id;
+        artEl.src = '/artwork.jpg?id=' + encodeURIComponent(currentArtId);
+      }
     }
 
-    // Smooth background polling every 2s (fetching lightweight ~200B JSON only)
-    setInterval(updateDashboard, 2000);
+    function connectWS() {
+      try {
+        var proto = (window.location.protocol === 'https:') ? 'wss:' : 'ws:';
+        ws = new WebSocket(proto + '//' + window.location.host + '/ws');
+        ws.onmessage = function(event) {
+          try {
+            var data = JSON.parse(event.data);
+            applyData(data);
+          } catch(e) {}
+        };
+        ws.onclose = function() {
+          ws = null;
+          setTimeout(connectWS, 2000);
+        };
+      } catch(e) {
+        ws = null;
+      }
+    }
+    connectWS();
+
+    function updateDashboard() {
+      if (ws && ws.readyState === WebSocket.OPEN) return;
+      fetch('/api/now-playing')
+        .then(function(res) { return res.json(); })
+        .then(applyData)
+        .catch(function(err) {});
+    }
+
+    // Fallback polling when WS is offline
+    setInterval(updateDashboard, 3000);
 
     function sendControl(url) {
-      fetch(url)
-        .then(function() {
-          setTimeout(updateDashboard, 150);
-        })
-        .catch(function(err) {
-          console.error('Control error:', err);
-        });
+      var action = url.split('/').pop();
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ action: action }));
+      } else {
+        fetch(url)
+          .then(function() {
+            setTimeout(updateDashboard, 150);
+          })
+          .catch(function(err) {
+            console.error('Control error:', err);
+          });
+      }
     }
   </script>
 </head>
@@ -600,7 +792,8 @@ INDEX_HTML = """<!DOCTYPE html>
     Endpoints:
     <a href="/api/now-playing" target="_blank">/api/now-playing</a> |
     <a href="/artwork.raw" target="_blank">/artwork.raw (72x72 RGB565)</a> |
-    <a href="/artwork.jpg" target="_blank">/artwork.jpg</a>
+    <a href="/artwork.jpg" target="_blank">/artwork.jpg</a> |
+    <a href="/ws" target="_blank">/ws (WebSocket)</a>
   </div>
 </body>
 </html>
@@ -620,7 +813,25 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
         path = self.path.split('?')[0]
 
-        if path == '/api/now-playing':
+        if path == '/ws' and 'websocket' in self.headers.get('Upgrade', '').lower():
+            key = self.headers.get('Sec-WebSocket-Key')
+            if not key:
+                self.send_error(400, "Missing Sec-WebSocket-Key")
+                return
+            accept_str = key.strip() + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
+            accept_hash = hashlib.sha1(accept_str.encode('utf-8')).digest()
+            accept_key = base64.b64encode(accept_hash).decode('utf-8')
+
+            self.send_response(101, "Switching Protocols")
+            self.send_header("Upgrade", "websocket")
+            self.send_header("Connection", "Upgrade")
+            self.send_header("Sec-WebSocket-Accept", accept_key)
+            self.end_headers()
+
+            bridge.handle_ws_client(self.request)
+            return
+
+        elif path == '/api/now-playing':
             meta = bridge.query_music()
             body = json.dumps(meta, indent=2).encode('utf-8')
             self.send_response(200)
@@ -719,6 +930,11 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
             self.end_headers()
 
 
+class ThreadingTCPServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
+    daemon_threads = True
+    allow_reuse_address = True
+
+
 def get_local_ip():
     import socket
     try:
@@ -746,13 +962,16 @@ def main():
     print(f" * Mac Local IP        : http://{local_ip}:{args.port}")
     print(f" * For Wokwi Simulator : http://host.wokwi.internal:{args.port}")
     print(f" * Metadata Endpoint   : http://host.wokwi.internal:{args.port}/api/now-playing")
+    print(f" * WebSocket Endpoint  : ws://host.wokwi.internal:{args.port}/ws")
     print(f" * Artwork RGB565      : http://host.wokwi.internal:{args.port}/artwork.raw (72x72 px)")
     print("=" * 60)
 
     print(" Press Ctrl+C to stop.\n")
 
-    socketserver.TCPServer.allow_reuse_address = True
-    with socketserver.TCPServer((args.host, args.port), RequestHandler) as httpd:
+    # Start background poller daemon for instant WebSocket push notifications
+    bridge.start_poller()
+
+    with ThreadingTCPServer((args.host, args.port), RequestHandler) as httpd:
         try:
             httpd.serve_forever()
         except KeyboardInterrupt:
