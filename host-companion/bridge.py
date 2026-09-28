@@ -71,13 +71,19 @@ def clean_text(text: str) -> str:
         '\u2013': '-', '\u2014': '-',
         '\u2026': '...', '\u00a0': ' '
     }
+    cleaned = text
     for orig, rep in replacements.items():
-        text = text.replace(orig, rep)
-    text = unicodedata.normalize('NFKD', text).encode('ascii', 'ignore').decode('ascii')
-    # Collapse consecutive spaces
+        cleaned = cleaned.replace(orig, rep)
+    
+    # Normalize unicode to decomposed form then attempt ASCII conversion
+    ascii_cand = unicodedata.normalize('NFKD', cleaned).encode('ascii', 'ignore').decode('ascii')
     import re
-    text = re.sub(r' +', ' ', text)
-    return text.strip()
+    ascii_cand = re.sub(r' +', ' ', ascii_cand).strip()
+    
+    # If ASCII filtering produced a non-empty string, use it; otherwise retain cleaned UTF-8
+    if ascii_cand:
+        return ascii_cand
+    return re.sub(r' +', ' ', cleaned).strip()
 
 
 def rgb_to_rgb565(raw_rgb: bytes, width: int, height: int) -> bytes:
@@ -123,6 +129,7 @@ class MusicController:
 
     def __init__(self, art_size: int = ARTWORK_SIZE):
         self.art_size = art_size
+        self._lock = threading.Lock()
         self.last_track_key = None
         self.cached_rgb565 = generate_default_rgb565(art_size)
         self.cached_jpeg = b""
@@ -132,97 +139,133 @@ class MusicController:
         self.active_player = "Music"  # "Music" or "Spotify"
 
     def query(self) -> dict:
-        now_ts = time.time()
-        # Throttled query: max once per 250ms
-        if now_ts - self.last_query_time < 0.25 and self.cached_meta:
-            return self.cached_meta
+        with self._lock:
+            now_ts = time.time()
+            # Throttled query: max once per 250ms
+            if now_ts - self.last_query_time < 0.25 and self.cached_meta:
+                return dict(self.cached_meta)
 
-        tz_offset = -time.timezone if (time.daylight == 0) else -time.altzone
-        clock_str = time.strftime("%H:%M")
+            tz_offset = -time.timezone if (time.daylight == 0) else -time.altzone
+            clock_str = time.strftime("%H:%M")
 
-        jxa_script = '''
-        (function() {
-            var musicRunning = false;
-            var spotifyRunning = false;
-            try { musicRunning = Application("Music").running(); } catch(e) {}
-            try { spotifyRunning = Application("Spotify").running(); } catch(e) {}
+            jxa_script = '''
+            (function() {
+                var musicRunning = false;
+                var spotifyRunning = false;
+                try { musicRunning = Application("Music").running(); } catch(e) {}
+                try { spotifyRunning = Application("Spotify").running(); } catch(e) {}
 
-            if (musicRunning) {
-                var music = Application("Music");
-                var mState = music.playerState();
-                if (mState === "playing" || (!spotifyRunning && mState !== "stopped")) {
-                    var mTrack = music.currentTrack;
-                    return JSON.stringify({
-                        player: "Music",
-                        running: true,
-                        state: mState,
-                        title: mTrack.name() || "",
-                        artist: mTrack.artist() || "",
-                        album: mTrack.album() || "",
-                        duration: Math.round(mTrack.duration() || 0),
-                        elapsed: Math.round(music.playerPosition() || 0),
-                        has_art: mTrack.artworks.length > 0
-                    });
+                if (musicRunning) {
+                    var music = Application("Music");
+                    var mState = music.playerState();
+                    if (mState === "playing" || (!spotifyRunning && mState !== "stopped")) {
+                        var mTrack = music.currentTrack;
+                        return JSON.stringify({
+                            player: "Music",
+                            running: true,
+                            state: mState,
+                            title: mTrack.name() || "",
+                            artist: mTrack.artist() || "",
+                            album: mTrack.album() || "",
+                            duration: Math.round(mTrack.duration() || 0),
+                            elapsed: Math.round(music.playerPosition() || 0),
+                            has_art: mTrack.artworks.length > 0
+                        });
+                    }
                 }
-            }
 
-            if (spotifyRunning) {
-                var spotify = Application("Spotify");
-                var sState = spotify.playerState();
-                if (sState !== "stopped") {
-                    var sTrack = spotify.currentTrack;
-                    return JSON.stringify({
-                        player: "Spotify",
-                        running: true,
-                        state: sState,
-                        title: sTrack.name() || "",
-                        artist: sTrack.artist() || "",
-                        album: sTrack.album() || "",
-                        duration: Math.round((sTrack.duration() || 0) / 1000),
-                        elapsed: Math.round(spotify.playerPosition() || 0),
-                        has_art: (sTrack.artworkUrl() || "").length > 0,
-                        artwork_url: sTrack.artworkUrl() || ""
-                    });
+                if (spotifyRunning) {
+                    var spotify = Application("Spotify");
+                    var sState = spotify.playerState();
+                    if (sState !== "stopped") {
+                        var sTrack = spotify.currentTrack;
+                        return JSON.stringify({
+                            player: "Spotify",
+                            running: true,
+                            state: sState,
+                            title: sTrack.name() || "",
+                            artist: sTrack.artist() || "",
+                            album: sTrack.album() || "",
+                            duration: Math.round((sTrack.duration() || 0) / 1000),
+                            elapsed: Math.round(spotify.playerPosition() || 0),
+                            has_art: (sTrack.artworkUrl() || "").length > 0,
+                            artwork_url: sTrack.artworkUrl() || ""
+                        });
+                    }
                 }
-            }
 
-            if (musicRunning) {
-                return JSON.stringify({ player: "Music", running: true, state: "stopped" });
-            }
-            if (spotifyRunning) {
-                return JSON.stringify({ player: "Spotify", running: true, state: "stopped" });
-            }
-            return JSON.stringify({ player: "none", running: false, state: "stopped" });
-        })();
-        '''
+                if (musicRunning) {
+                    return JSON.stringify({ player: "Music", running: true, state: "stopped" });
+                }
+                if (spotifyRunning) {
+                    return JSON.stringify({ player: "Spotify", running: true, state: "stopped" });
+                }
+                return JSON.stringify({ player: "none", running: false, state: "stopped" });
+            })();
+            '''
 
-        try:
-            res = subprocess.run(
-                ['osascript', '-l', 'JavaScript', '-e', jxa_script],
-                capture_output=True,
-                text=True,
-                timeout=1.5
-            )
-            out = res.stdout.strip()
-            data = json.loads(out) if out else {"running": False, "state": "stopped"}
-        except Exception:
-            data = {"running": False, "state": "stopped"}
+            try:
+                res = subprocess.run(
+                    ['osascript', '-l', 'JavaScript', '-e', jxa_script],
+                    capture_output=True,
+                    text=True,
+                    timeout=1.5
+                )
+                out = res.stdout.strip()
+                data = json.loads(out) if out else {"running": False, "state": "stopped"}
+            except Exception:
+                data = {"running": False, "state": "stopped"}
 
-        self.last_query_time = now_ts
-        self.active_player = data.get("player", "Music")
-        running = data.get("running", False)
-        state = data.get("state", "stopped")
+            self.last_query_time = now_ts
+            self.active_player = data.get("player", "Music")
+            running = data.get("running", False)
+            state = data.get("state", "stopped")
 
-        if not running or state == "stopped":
+            if not running or state == "stopped":
+                meta = {
+                    "running": running,
+                    "state": "stopped",
+                    "title": "",
+                    "artist": "",
+                    "album": "",
+                    "duration": 0,
+                    "elapsed": 0,
+                    "artwork_id": "none",
+                    "clock": clock_str,
+                    "epoch": int(now_ts),
+                    "tz_offset": tz_offset,
+                    "player": self.active_player
+                }
+                self.cached_meta = meta
+                return meta
+
+            title = clean_text(data.get("title", ""))
+            artist = clean_text(data.get("artist", ""))
+            album = clean_text(data.get("album", ""))
+            duration = data.get("duration", 0)
+            elapsed = data.get("elapsed", 0)
+            has_art = data.get("has_art", False)
+            art_url = data.get("artwork_url", "")
+
+            track_key = f"{self.active_player}_{title}_{artist}_{album}"
+            if track_key != self.last_track_key:
+                self.last_track_key = track_key
+                if has_art:
+                    self._extract_artwork(track_key, art_url)
+                else:
+                    self.cached_art_id = "default"
+                    self.cached_rgb565 = generate_default_rgb565(self.art_size)
+                    self.cached_jpeg = b""
+
             meta = {
-                "running": running,
-                "state": "stopped",
-                "title": "",
-                "artist": "",
-                "album": "",
-                "duration": 0,
-                "elapsed": 0,
-                "artwork_id": "none",
+                "running": True,
+                "state": state.lower(),
+                "title": title,
+                "artist": artist,
+                "album": album,
+                "duration": duration,
+                "elapsed": elapsed,
+                "artwork_id": self.cached_art_id,
                 "clock": clock_str,
                 "epoch": int(now_ts),
                 "tz_offset": tz_offset,
@@ -230,41 +273,6 @@ class MusicController:
             }
             self.cached_meta = meta
             return meta
-
-        title = clean_text(data.get("title", ""))
-        artist = clean_text(data.get("artist", ""))
-        album = clean_text(data.get("album", ""))
-        duration = data.get("duration", 0)
-        elapsed = data.get("elapsed", 0)
-        has_art = data.get("has_art", False)
-        art_url = data.get("artwork_url", "")
-
-        track_key = f"{self.active_player}_{title}_{artist}_{album}"
-        if track_key != self.last_track_key:
-            self.last_track_key = track_key
-            if has_art:
-                self._extract_artwork(track_key, art_url)
-            else:
-                self.cached_art_id = "default"
-                self.cached_rgb565 = generate_default_rgb565(self.art_size)
-                self.cached_jpeg = b""
-
-        meta = {
-            "running": True,
-            "state": state.lower(),
-            "title": title,
-            "artist": artist,
-            "album": album,
-            "duration": duration,
-            "elapsed": elapsed,
-            "artwork_id": self.cached_art_id,
-            "clock": clock_str,
-            "epoch": int(now_ts),
-            "tz_offset": tz_offset,
-            "player": self.active_player
-        }
-        self.cached_meta = meta
-        return meta
 
     def execute_command(self, cmd: str) -> bool:
         """Execute playback action on the currently active media player."""

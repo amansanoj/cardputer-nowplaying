@@ -47,8 +47,8 @@ private:
   TrackInfo pendingTrack;
   bool hasPendingTrack;
 
-  // Binary artwork chunk assembly (supports arbitrary order, up to 64 chunks)
-  static const size_t MAX_ART_CHUNKS = 64;
+  // Binary artwork chunk assembly (supports arbitrary order, up to 256 chunks for low MTUs)
+  static const size_t MAX_ART_CHUNKS = 256;
   uint8_t artReceiveBuffer[ARTWORK_SIZE * ARTWORK_SIZE * 2];
   size_t artBytesReceived;
   bool chunkReceived[MAX_ART_CHUNKS];

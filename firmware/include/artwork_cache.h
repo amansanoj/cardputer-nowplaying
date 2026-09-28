@@ -30,7 +30,13 @@ private:
   SPIClass sdSPI;
 
   static const size_t MAX_LITTLEFS_ARTWORKS = 25;
+  String lruList[MAX_LITTLEFS_ARTWORKS + 5];
+  size_t lruCount;
+  bool lruDirty;
+
+  void loadLRUFromFlash();
+  void syncLRUToFlash();
   void evictOldestIfNeeded();
-  void touchLRU(const String& artworkId);
+  void touchLRU(const String& artworkId, bool persistNow = false);
 };
 

@@ -225,7 +225,7 @@ bool MusicClient::fetchMetadata(TrackInfo& info) {
 
   String url = serverBaseUrl + METADATA_PATH;
   httpClient.begin(wifiClient, url);
-  httpClient.setTimeout(2500);
+  httpClient.setTimeout(800);
 
   int httpCode = httpClient.GET();
   if (httpCode != HTTP_CODE_OK) {
@@ -274,7 +274,7 @@ bool MusicClient::fetchArtwork(uint8_t* buffer, size_t bufferSize) {
 
   String url = serverBaseUrl + ARTWORK_PATH;
   httpClient.begin(wifiClient, url);
-  httpClient.setTimeout(3000);
+  httpClient.setTimeout(1200);
 
   int httpCode = httpClient.GET();
   if (httpCode != HTTP_CODE_OK) {
