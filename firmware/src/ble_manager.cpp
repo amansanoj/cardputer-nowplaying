@@ -8,9 +8,20 @@ BleManager::BleManager()
   : pServer(nullptr), pService(nullptr),
     pCharMetadata(nullptr), pCharControl(nullptr), pCharArtwork(nullptr),
     deviceConnected(false), oldDeviceConnected(false),
-    hasPendingTrack(false), artBytesReceived(0), artComplete(false),
+    bleMutex(nullptr), hasPendingTrack(false),
+    artBytesReceived(0), expectedTotalChunks(0), chunksReceivedCount(0),
+    artComplete(false),
     currentArtId("") {
+  bleMutex = xSemaphoreCreateMutex();
   memset(artReceiveBuffer, 0, sizeof(artReceiveBuffer));
+  memset(chunkReceived, 0, sizeof(chunkReceived));
+}
+
+BleManager::~BleManager() {
+  if (bleMutex) {
+    vSemaphoreDelete(bleMutex);
+    bleMutex = nullptr;
+  }
 }
 
 bool BleManager::begin() {
@@ -81,17 +92,22 @@ void BleManager::onWrite(BLECharacteristic* pCharacteristic) {
       JsonDocument doc;
       DeserializationError err = deserializeJson(doc, value);
       if (!err) {
-        pendingTrack.isRunning = doc["running"] | false;
-        pendingTrack.state     = doc["state"] | "stopped";
-        pendingTrack.title     = doc["title"] | "";
-        pendingTrack.artist    = doc["artist"] | "";
-        pendingTrack.album     = doc["album"] | "";
-        pendingTrack.duration  = doc["duration"] | 0;
-        pendingTrack.elapsed   = doc["elapsed"] | 0;
-        pendingTrack.artworkId = doc["artwork_id"] | "none";
-        pendingTrack.clock     = doc["clock"] | "--:--";
+        TrackInfo incoming;
+        incoming.isRunning = doc["running"] | false;
+        incoming.state     = doc["state"] | "stopped";
+        incoming.title     = doc["title"] | "";
+        incoming.artist    = doc["artist"] | "";
+        incoming.album     = doc["album"] | "";
+        incoming.duration  = doc["duration"] | 0;
+        incoming.elapsed   = doc["elapsed"] | 0;
+        incoming.artworkId = doc["artwork_id"] | "none";
+        incoming.clock     = doc["clock"] | "--:--";
 
-        hasPendingTrack = true;
+        if (bleMutex && xSemaphoreTake(bleMutex, pdMS_TO_TICKS(100)) == pdTRUE) {
+          pendingTrack = incoming;
+          hasPendingTrack = true;
+          xSemaphoreGive(bleMutex);
+        }
       }
     }
   } else if (pCharacteristic == pCharArtwork) {
@@ -101,34 +117,61 @@ void BleManager::onWrite(BLECharacteristic* pCharacteristic) {
     if (len >= 4) {
       uint16_t chunkIdx = (data[0] << 8) | data[1];
       uint16_t totalChunks = (data[2] << 8) | data[3];
-      const uint8_t* payload = data + 4;
-      size_t payloadLen = len - 4;
+      size_t targetOffset = 0;
+      const uint8_t* payload = nullptr;
+      size_t payloadLen = 0;
 
-      if (chunkIdx == 0) {
-        artBytesReceived = 0;
-        artComplete = false;
+      if (len >= 6) {
+        // Dynamic MTU 6-byte header with explicit targetOffset
+        targetOffset = (data[4] << 8) | data[5];
+        payload = data + 6;
+        payloadLen = len - 6;
+      } else {
+        // Legacy 4-byte fixed header fallback
+        targetOffset = (size_t)chunkIdx * 480;
+        payload = data + 4;
+        payloadLen = len - 4;
       }
 
-      if (artBytesReceived + payloadLen <= sizeof(artReceiveBuffer)) {
-        memcpy(artReceiveBuffer + artBytesReceived, payload, payloadLen);
-        artBytesReceived += payloadLen;
-      }
+      if (bleMutex && xSemaphoreTake(bleMutex, pdMS_TO_TICKS(100)) == pdTRUE) {
+        lastChunkTime = millis();
+        if (totalChunks > 0 && totalChunks <= MAX_ART_CHUNKS) {
+          expectedTotalChunks = totalChunks;
+        }
 
-      if (chunkIdx + 1 >= totalChunks || artBytesReceived >= sizeof(artReceiveBuffer)) {
-        artComplete = true;
-        Serial.printf("[BLE] Artwork fully received! (%u bytes)\n", (unsigned int)artBytesReceived);
+        if (chunkIdx < MAX_ART_CHUNKS && (targetOffset + payloadLen <= sizeof(artReceiveBuffer))) {
+          memcpy(artReceiveBuffer + targetOffset, payload, payloadLen);
+          if (!chunkReceived[chunkIdx]) {
+            chunkReceived[chunkIdx] = true;
+            chunksReceivedCount++;
+          }
+          if (targetOffset + payloadLen > artBytesReceived) {
+            artBytesReceived = targetOffset + payloadLen;
+          }
+        }
+
+        if (expectedTotalChunks > 0 && chunksReceivedCount >= expectedTotalChunks && artBytesReceived >= sizeof(artReceiveBuffer)) {
+          artComplete = true;
+          Serial.printf("[BLE] Artwork all %u chunks validated and complete (%u bytes)!\n",
+                        expectedTotalChunks, (unsigned int)artBytesReceived);
+        }
+        xSemaphoreGive(bleMutex);
       }
     }
   }
 }
 
 bool BleManager::popTrackUpdate(TrackInfo& info) {
-  if (hasPendingTrack) {
-    info = pendingTrack;
-    hasPendingTrack = false;
-    return true;
+  bool ret = false;
+  if (bleMutex && xSemaphoreTake(bleMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
+    if (hasPendingTrack) {
+      info = pendingTrack;
+      hasPendingTrack = false;
+      ret = true;
+    }
+    xSemaphoreGive(bleMutex);
   }
-  return false;
+  return ret;
 }
 
 bool BleManager::sendCommand(const String& cmd) {
@@ -145,16 +188,38 @@ bool BleManager::requestArtwork(const String& artworkId) {
   if (!deviceConnected || artworkId.length() == 0) {
     return false;
   }
-  currentArtId = artworkId;
+  if (bleMutex && xSemaphoreTake(bleMutex, pdMS_TO_TICKS(100)) == pdTRUE) {
+    currentArtId = artworkId;
+    artBytesReceived = 0;
+    expectedTotalChunks = 0;
+    chunksReceivedCount = 0;
+    artComplete = false;
+    lastChunkTime = millis();
+    memset(chunkReceived, 0, sizeof(chunkReceived));
+    xSemaphoreGive(bleMutex);
+  }
   String req = "GET_ART:" + artworkId;
   return sendCommand(req);
 }
 
 bool BleManager::hasNewArtwork(uint8_t* buffer, size_t bufferSize) {
-  if (artComplete && buffer != nullptr && bufferSize >= artBytesReceived) {
-    memcpy(buffer, artReceiveBuffer, artBytesReceived);
-    artComplete = false;
-    return true;
+  bool ret = false;
+  if (bleMutex && xSemaphoreTake(bleMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
+    // Check for stalled / timed-out transfer
+    if (chunksReceivedCount > 0 && !artComplete && (millis() - lastChunkTime > 4000)) {
+      Serial.println("[BLE] Artwork packet stream timed out. Resetting state.");
+      artBytesReceived = 0;
+      expectedTotalChunks = 0;
+      chunksReceivedCount = 0;
+      memset(chunkReceived, 0, sizeof(chunkReceived));
+    }
+
+    if (artComplete && buffer != nullptr && bufferSize >= artBytesReceived) {
+      memcpy(buffer, artReceiveBuffer, artBytesReceived);
+      artComplete = false;
+      ret = true;
+    }
+    xSemaphoreGive(bleMutex);
   }
-  return false;
+  return ret;
 }

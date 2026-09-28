@@ -22,8 +22,15 @@ public:
   StorageType getStorageType() const { return storageType; }
   const char* getStorageName() const;
 
+  static bool isValidId(const String& artworkId);
+
 private:
   StorageType storageType;
   fs::FS* fsPtr;
   SPIClass sdSPI;
+
+  static const size_t MAX_LITTLEFS_ARTWORKS = 25;
+  void evictOldestIfNeeded();
+  void touchLRU(const String& artworkId);
 };
+

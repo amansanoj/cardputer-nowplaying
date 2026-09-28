@@ -4,7 +4,13 @@
 #include "config.h"
 #include "display_ui.h"
 
+enum TransportMode : uint8_t {
+  TRANSPORT_BLE = 0,
+  TRANSPORT_WIFI = 1
+};
+
 struct AppConfig {
+  uint8_t transportMode = TRANSPORT_BLE;
   String wifiSsid = "";
   String wifiPassword = "";
   String macHost = "";
@@ -12,13 +18,15 @@ struct AppConfig {
   bool isConfigured = false;
 };
 
+class KeyboardDriver;
+
 class ConfigManager {
 public:
   ConfigManager();
   bool load(AppConfig& config);
   void save(const AppConfig& config);
   void clear();
-  void runSetupPortal(DisplayUI& ui, AppConfig& config);
+  bool runSetupPortal(DisplayUI& ui, AppConfig& config, KeyboardDriver* keyboard = nullptr);
 
 private:
   Preferences prefs;

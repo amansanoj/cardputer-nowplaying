@@ -1,7 +1,9 @@
 #if __has_include("config_manager.h")
 #include "config_manager.h"
+#include "keyboard_driver.h"
 #else
 #include "../include/config_manager.h"
+#include "../include/keyboard_driver.h"
 #endif
 
 #include <WiFi.h>
@@ -32,16 +34,18 @@ void ConfigManager::sanitizeHost(String& host) {
 
 bool ConfigManager::load(AppConfig& config) {
   prefs.begin("nowplaying", true);
-  config.isConfigured = prefs.getBool("configured", false);
-  config.wifiSsid     = prefs.getString("ssid", "");
-  config.wifiPassword = prefs.getString("password", "");
-  config.macHost      = prefs.getString("host", "");
-  config.port         = prefs.getUShort("port", DEFAULT_PORT);
+  config.isConfigured  = prefs.getBool("configured", false);
+  config.transportMode = prefs.getUChar("transport", TRANSPORT_BLE);
+  config.wifiSsid      = prefs.getString("ssid", "");
+  config.wifiPassword  = prefs.getString("password", "");
+  config.macHost       = prefs.getString("host", "");
+  config.port          = prefs.getUShort("port", DEFAULT_PORT);
   prefs.end();
 
 #if defined(TARGET_WOKWI_SIMULATOR)
   if (!config.isConfigured || config.wifiSsid.length() == 0 || config.macHost.length() == 0) {
     config.isConfigured = true;
+    config.transportMode = TRANSPORT_WIFI;
     config.wifiSsid = WOKWI_DEFAULT_SSID;
     config.wifiPassword = WOKWI_DEFAULT_PASS;
     config.macHost = WOKWI_DEFAULT_HOST;
@@ -50,18 +54,25 @@ bool ConfigManager::load(AppConfig& config) {
   }
 #endif
 
+  // In BLE mode, physical hardware is ready out-of-the-box
+  if (config.transportMode == TRANSPORT_BLE) {
+    return true;
+  }
+
   return config.isConfigured && (config.wifiSsid.length() > 0) && (config.macHost.length() > 0);
 }
 
 void ConfigManager::save(const AppConfig& config) {
   prefs.begin("nowplaying", false);
+  prefs.putUChar("transport", config.transportMode);
   prefs.putString("ssid", config.wifiSsid);
   prefs.putString("password", config.wifiPassword);
   prefs.putString("host", config.macHost);
   prefs.putUShort("port", config.port);
   prefs.putBool("configured", true);
   prefs.end();
-  Serial.println("[Config] Settings saved to NVS flash!");
+  Serial.printf("[Config] Settings saved to NVS flash (Transport: %s)!\n",
+                config.transportMode == TRANSPORT_WIFI ? "Wi-Fi" : "BLE");
 }
 
 void ConfigManager::clear() {
@@ -71,12 +82,13 @@ void ConfigManager::clear() {
   Serial.println("[Config] Settings cleared!");
 }
 
-void ConfigManager::runSetupPortal(DisplayUI& ui, AppConfig& config) {
+bool ConfigManager::runSetupPortal(DisplayUI& ui, AppConfig& config, KeyboardDriver* keyboard) {
   Serial.println("\n=======================================================");
   Serial.println("         CARDPUTER NOW PLAYING - SETUP PORTAL          ");
   Serial.println("=======================================================");
   Serial.println(" 1. Connect your phone/laptop to Wi-Fi: " AP_SSID);
   Serial.println(" 2. Open browser: http://192.168.4.1");
+  Serial.println(" Keyboard: [G0]/[X] Exit | [R] Reboot");
   Serial.println(" OR enter via USB Serial: SET:SSID,PASSWORD,MAC_LAN_IP");
   Serial.println("=======================================================\n");
 
@@ -131,7 +143,19 @@ void ConfigManager::runSetupPortal(DisplayUI& ui, AppConfig& config) {
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Now Playing Setup</title>
 <style>
-  @import url('https://cdn.jsdelivr.net/npm/@amansanoj/brand/globals.css');
+  :root {
+    --font-body: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    --font-display: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    --background: #050505;
+    --card: #0d0d0d;
+    --border: #252525;
+    --text: #e6e6e6;
+    --muted: #808080;
+    --muted-foreground: #8a8a8a;
+    --accent: #afbdd9;
+    --radius: 8px;
+  }
 
   * { box-sizing: border-box; margin: 0; padding: 0; }
   html, body { height: 100%; }
@@ -297,41 +321,52 @@ void ConfigManager::runSetupPortal(DisplayUI& ui, AppConfig& config) {
 
     <form onsubmit="handleSubmit(event)">
       <div class="field">
-        <label for="ssid_select">Wi-Fi network</label>
-        <select id="ssid_select" onchange="checkManualSSID()">
+        <label for="transport">Connection Mode</label>
+        <select id="transport" name="transport" onchange="toggleTransport()">
+          <option value="0">Bluetooth Low Energy (BLE) &ndash; Recommended / Battery Saver</option>
+          <option value="1">Wi-Fi &amp; WebSocket (Local Network / Wokwi Simulator)</option>
+        </select>
+        <div class="hint">BLE pairs directly with Mac companion bridge with zero Wi-Fi credentials.</div>
+      </div>
+
+      <div id="wifi_fields" style="display:none;">
+        <div class="field">
+          <label for="ssid_select">Wi-Fi network</label>
+          <select id="ssid_select" onchange="checkManualSSID()">
 )rawliteral";
 
     html += networkOptions;
 
     html += R"rawliteral(
-          <option value="__custom__">Manual entry&hellip;</option>
-        </select>
-      </div>
-
-      <div class="field" id="manual_ssid_div" style="display:none;">
-        <label for="manual_ssid">Network name</label>
-        <input type="text" id="manual_ssid" name="manual_ssid" placeholder="Network name">
-      </div>
-
-      <div class="field">
-        <label for="password">Wi-Fi password</label>
-        <div class="pass-row">
-          <input type="password" id="password" name="password" placeholder="Password">
-          <label class="toggle-pass" for="show_pass">
-            <input type="checkbox" id="show_pass" onclick="togglePass()">
-            Show
-          </label>
+            <option value="__custom__">Manual entry&hellip;</option>
+          </select>
         </div>
-      </div>
 
-      <div class="field">
-        <label for="host">Mac LAN IP address</label>
-        <input type="text" id="host" name="host" placeholder="192.168.1.150" required>
-      </div>
+        <div class="field" id="manual_ssid_div" style="display:none;">
+          <label for="manual_ssid">Network name</label>
+          <input type="text" id="manual_ssid" name="manual_ssid" placeholder="Network name">
+        </div>
 
-      <div class="field">
-        <label for="port">Bridge port</label>
-        <input type="number" id="port" name="port" value="58329" min="1" max="65535" required>
+        <div class="field">
+          <label for="password">Wi-Fi password</label>
+          <div class="pass-row">
+            <input type="password" id="password" name="password" placeholder="Password">
+            <label class="toggle-pass" for="show_pass">
+              <input type="checkbox" id="show_pass" onclick="togglePass()">
+              Show
+            </label>
+          </div>
+        </div>
+
+        <div class="field">
+          <label for="host">Mac LAN IP address</label>
+          <input type="text" id="host" name="host" placeholder="192.168.1.150">
+        </div>
+
+        <div class="field">
+          <label for="port">Bridge port</label>
+          <input type="number" id="port" name="port" value="58329" min="1" max="65535">
+        </div>
       </div>
 
       <button type="submit">Save &amp; connect</button>
@@ -340,6 +375,12 @@ void ConfigManager::runSetupPortal(DisplayUI& ui, AppConfig& config) {
   </div>
 
   <script>
+    function toggleTransport() {
+      var transport = document.getElementById("transport").value;
+      var wifiDiv = document.getElementById("wifi_fields");
+      wifiDiv.style.display = (transport === "1") ? "block" : "none";
+    }
+
     function checkManualSSID() {
       var sel = document.getElementById("ssid_select");
       var manualDiv = document.getElementById("manual_ssid_div");
@@ -354,9 +395,10 @@ void ConfigManager::runSetupPortal(DisplayUI& ui, AppConfig& config) {
 
     function handleSubmit(e) {
       e.preventDefault();
+      var transport = document.getElementById("transport").value;
       var sel = document.getElementById("ssid_select");
       var manual = document.getElementById("manual_ssid");
-      var ssid = (sel.value === "__custom__" || !sel.value) ? manual.value : sel.value;
+      var ssid = (sel && (sel.value === "__custom__" || !sel.value)) ? manual.value : (sel ? sel.value : "");
       var pass = document.getElementById("password").value;
       var host = document.getElementById("host").value;
       var port = document.getElementById("port").value;
@@ -365,7 +407,8 @@ void ConfigManager::runSetupPortal(DisplayUI& ui, AppConfig& config) {
       status.textContent = "Saving...";
       status.className = "status";
 
-      var body = "ssid=" + encodeURIComponent(ssid) +
+      var body = "transport=" + encodeURIComponent(transport) +
+                 "&ssid=" + encodeURIComponent(ssid) +
                  "&password=" + encodeURIComponent(pass) +
                  "&host=" + encodeURIComponent(host) +
                  "&port=" + encodeURIComponent(port);
@@ -375,10 +418,10 @@ void ConfigManager::runSetupPortal(DisplayUI& ui, AppConfig& config) {
         headers: { "Content-Type": "application/x-www-form-urlencoded" },
         body: body
       }).then(function(res) {
-        status.textContent = "Saved. Cardputer will reboot and reconnect.";
+        status.textContent = "Saved. Cardputer will reboot into selected mode.";
         status.classList.add("ok");
       }).catch(function(err) {
-        status.textContent = "Saved. Cardputer will reboot and reconnect.";
+        status.textContent = "Saved. Cardputer will reboot into selected mode.";
         status.classList.add("ok");
       });
     }
@@ -391,6 +434,8 @@ void ConfigManager::runSetupPortal(DisplayUI& ui, AppConfig& config) {
 
   // Save handler
   server.on("/save", HTTP_POST, [&]() {
+    String transStr = server.arg("transport");
+    uint8_t mode = (transStr == "1") ? TRANSPORT_WIFI : TRANSPORT_BLE;
     String ssid = server.arg("ssid");
     if (ssid.length() == 0) {
       ssid = server.arg("manual_ssid");
@@ -403,6 +448,7 @@ void ConfigManager::runSetupPortal(DisplayUI& ui, AppConfig& config) {
     uint16_t port = portStr.toInt();
     if (port == 0) port = DEFAULT_PORT;
 
+    config.transportMode = mode;
     config.wifiSsid = ssid;
     config.wifiPassword = pass;
     config.macHost = host;
@@ -433,10 +479,33 @@ void ConfigManager::runSetupPortal(DisplayUI& ui, AppConfig& config) {
   unsigned long simSetupStart = millis();
 #endif
 
-  // Run captive loop until user submits or provides Serial command
+  // Run captive loop until user submits or provides exit/reboot command
   while (!configSaved) {
     dnsServer.processNextRequest();
     server.handleClient();
+
+    // 1. Physical Keyboard checks (Exit or Reboot)
+    if (keyboard) {
+      char k = keyboard->getKey();
+      if (k == 'r' || k == 'R') {
+        Serial.println("[Setup] Reboot requested via keyboard!");
+        delay(100);
+        ESP.restart();
+      } else if (k == 'x' || k == 'X' || k == 27) { // 27 = ESC
+        Serial.println("[Setup] Exit requested via keyboard.");
+        break;
+      }
+    }
+
+    // 2. Hardware G0 button check
+    pinMode(0, INPUT_PULLUP);
+    if (digitalRead(0) == LOW) {
+      delay(60);
+      if (digitalRead(0) == LOW) {
+        Serial.println("[Setup] G0 pressed. Exiting setup portal...");
+        break;
+      }
+    }
 
 #if defined(TARGET_WOKWI_SIMULATOR)
     // In Wokwi simulator, display the setup screen for 4 seconds,
@@ -454,11 +523,18 @@ void ConfigManager::runSetupPortal(DisplayUI& ui, AppConfig& config) {
     }
 #endif
 
-    // Check for Serial input: SET:SSID,PASSWORD,MAC_LAN_IP or DEFAULT
+    // Check for Serial input: SET:SSID,PASSWORD,MAC_LAN_IP, DEFAULT, REBOOT, or EXIT
     if (Serial.available()) {
       String line = Serial.readStringUntil('\n');
       line.trim();
-      if (line.equalsIgnoreCase("DEFAULT")) {
+      if (line.equalsIgnoreCase("REBOOT") || line.equalsIgnoreCase("R")) {
+        Serial.println("[Setup] Reboot requested via Serial!");
+        delay(100);
+        ESP.restart();
+      } else if (line.equalsIgnoreCase("EXIT") || line.equalsIgnoreCase("X")) {
+        Serial.println("[Setup] Exit requested via Serial.");
+        break;
+      } else if (line.equalsIgnoreCase("DEFAULT")) {
         config.wifiSsid = WOKWI_DEFAULT_SSID;
         config.wifiPassword = WOKWI_DEFAULT_PASS;
         config.macHost = WOKWI_DEFAULT_HOST;
@@ -471,38 +547,44 @@ void ConfigManager::runSetupPortal(DisplayUI& ui, AppConfig& config) {
       } else if (line.startsWith("SET:")) {
         String data = line.substring(4);
         int c1 = data.indexOf(',');
-        if (c1 >= 0) {
-          int c2 = data.indexOf(',', c1 + 1);
-          if (c2 >= 0) {
-            config.wifiSsid = data.substring(0, c1);
-            config.wifiPassword = data.substring(c1 + 1, c2);
-            config.macHost = data.substring(c2 + 1);
-            config.port = DEFAULT_PORT;
-            sanitizeHost(config.macHost);
-            config.isConfigured = true;
-            save(config);
-            configSaved = true;
-            Serial.printf("[Setup] Config received via Serial: SSID=%s, Host=%s:%u\n",
-                          config.wifiSsid.c_str(), config.macHost.c_str(), config.port);
-          }
+        int cLast = data.lastIndexOf(',');
+        if (c1 >= 0 && cLast > c1) {
+          config.wifiSsid = data.substring(0, c1);
+          config.wifiPassword = data.substring(c1 + 1, cLast);
+          config.macHost = data.substring(cLast + 1);
+          config.port = DEFAULT_PORT;
+          sanitizeHost(config.macHost);
+          config.isConfigured = true;
+          save(config);
+          configSaved = true;
+          Serial.printf("[Setup] Config received via Serial: SSID=%s, Host=%s:%u\n",
+                        config.wifiSsid.c_str(), config.macHost.c_str(), config.port);
         }
       } else if (line.equalsIgnoreCase("HELP")) {
         Serial.println("Commands:");
         Serial.println("  SET:SSID,PASSWORD,MAC_LAN_IP");
         Serial.println("  DEFAULT (use Wokwi defaults: Wokwi-GUEST / host.wokwi.internal)");
+        Serial.println("  REBOOT (restart ESP32)");
+        Serial.println("  EXIT (leave setup portal)");
       }
     }
 
     delay(5);
   }
 
-  ui.renderStatus("Settings Saved!", "Connecting to Wi-Fi...");
-  delay(1200);
-
   server.stop();
   dnsServer.stop();
   WiFi.softAPdisconnect(true);
   WiFi.scanDelete();
   WiFi.mode(WIFI_STA);
-  delay(200);
+  delay(100);
+
+  if (configSaved) {
+    ui.renderStatus("Settings Saved!", "Connecting to Wi-Fi...");
+    delay(1000);
+  } else {
+    ui.renderStatus("Setup Exited", "Resuming...");
+    delay(600);
+  }
+  return configSaved;
 }

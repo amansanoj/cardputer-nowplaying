@@ -5,7 +5,8 @@
 #include <BLEUtils.h>
 #include <BLE2902.h>
 #include <ArduinoJson.h>
-#include "music_client.h"
+#include <freertos/semphr.h>
+#include "display_ui.h"
 #include "config.h"
 
 #define BLE_DEVICE_NAME        "Cardputer-NowPlaying"
@@ -17,6 +18,7 @@
 class BleManager : public BLEServerCallbacks, public BLECharacteristicCallbacks {
 public:
   BleManager();
+  ~BleManager();
   bool begin();
   bool isConnected() const { return deviceConnected; }
   bool popTrackUpdate(TrackInfo& info);
@@ -41,12 +43,18 @@ private:
   bool deviceConnected;
   bool oldDeviceConnected;
 
+  SemaphoreHandle_t bleMutex;
   TrackInfo pendingTrack;
   bool hasPendingTrack;
 
-  // Binary artwork chunk assembly
+  // Binary artwork chunk assembly (supports arbitrary order, up to 64 chunks)
+  static const size_t MAX_ART_CHUNKS = 64;
   uint8_t artReceiveBuffer[ARTWORK_SIZE * ARTWORK_SIZE * 2];
   size_t artBytesReceived;
+  bool chunkReceived[MAX_ART_CHUNKS];
+  uint16_t expectedTotalChunks;
+  uint16_t chunksReceivedCount;
   bool artComplete;
+  unsigned long lastChunkTime;
   String currentArtId;
 };

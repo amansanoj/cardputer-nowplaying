@@ -83,9 +83,10 @@ char KeyboardDriver::getKey() {
   // 1. Check physical TCA8418 keyboard (on Cardputer-Adv)
   if (hardwarePresent) {
     uint8_t count = readReg(REG_KEY_LCK_EC) & 0x0F;
-    if (count > 0) {
+    while (count > 0) {
       uint8_t event = readReg(REG_KEY_EVENT_A);
       writeReg(REG_INT_STAT, 0x01); // clear interrupt
+      count--;
 
       bool isPress = (event & 0x80) != 0;
       if (isPress) {

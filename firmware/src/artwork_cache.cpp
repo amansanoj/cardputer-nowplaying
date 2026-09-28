@@ -35,7 +35,18 @@ bool ArtworkCache::begin() {
   }
 #endif
 
-  Serial.println("[ArtworkCache] No SD card mounted. Direct stream active.");
+  // 2. Fall back to LittleFS on internal SPI flash
+  if (LittleFS.begin(true)) {
+    storageType = STORAGE_LITTLEFS;
+    fsPtr = &LittleFS;
+    Serial.println("[ArtworkCache] LittleFS mounted successfully on internal flash!");
+    if (!LittleFS.exists("/art")) {
+      LittleFS.mkdir("/art");
+    }
+    return true;
+  }
+
+  Serial.println("[ArtworkCache] No SD card or LittleFS mounted. Direct stream active.");
   storageType = STORAGE_NONE;
   fsPtr = nullptr;
   return false;
@@ -49,8 +60,23 @@ const char* ArtworkCache::getStorageName() const {
   }
 }
 
+bool ArtworkCache::isValidId(const String& artworkId) {
+  if (artworkId.length() == 0 || artworkId.length() > 32 || artworkId == "none") {
+    return false;
+  }
+  for (unsigned int i = 0; i < artworkId.length(); i++) {
+    char c = artworkId.charAt(i);
+    bool ok = (c >= 'a' && c <= 'z') ||
+              (c >= 'A' && c <= 'Z') ||
+              (c >= '0' && c <= '9') ||
+              (c == '_') || (c == '-');
+    if (!ok) return false;
+  }
+  return true;
+}
+
 bool ArtworkCache::hasArtwork(const String& artworkId) {
-  if (!fsPtr || artworkId.length() == 0 || artworkId == "none") {
+  if (!fsPtr || !isValidId(artworkId)) {
     return false;
   }
 
@@ -68,7 +94,7 @@ bool ArtworkCache::hasArtwork(const String& artworkId) {
 }
 
 bool ArtworkCache::loadArtwork(const String& artworkId, uint8_t* buffer, size_t bufferSize) {
-  if (!fsPtr || artworkId.length() == 0 || buffer == nullptr) {
+  if (!fsPtr || !isValidId(artworkId) || buffer == nullptr) {
     return false;
   }
 
@@ -78,17 +104,152 @@ bool ArtworkCache::loadArtwork(const String& artworkId, uint8_t* buffer, size_t 
     return false;
   }
 
-  size_t bytesRead = f.read(buffer, bufferSize);
+  const size_t EXPECTED_SIZE = ARTWORK_SIZE * ARTWORK_SIZE * 2;
+  if (f.size() != EXPECTED_SIZE || bufferSize < EXPECTED_SIZE) {
+    f.close();
+    return false;
+  }
+
+  size_t bytesRead = f.read(buffer, EXPECTED_SIZE);
   f.close();
 
-  const size_t EXPECTED_SIZE = ARTWORK_SIZE * ARTWORK_SIZE * 2;
-  return (bytesRead == EXPECTED_SIZE);
+  if (bytesRead == EXPECTED_SIZE) {
+    touchLRU(artworkId);
+    return true;
+  }
+  return false;
+}
+
+void ArtworkCache::touchLRU(const String& artworkId) {
+  if (storageType != STORAGE_LITTLEFS || !fsPtr || !isValidId(artworkId)) {
+    return;
+  }
+
+  // Read existing IDs
+  String ids[MAX_LITTLEFS_ARTWORKS + 5];
+  size_t count = 0;
+
+  if (fsPtr->exists("/art/lru.txt")) {
+    File f = fsPtr->open("/art/lru.txt", "r");
+    if (f) {
+      while (f.available() && count < (MAX_LITTLEFS_ARTWORKS + 5)) {
+        String line = f.readStringUntil('\n');
+        line.trim();
+        if (line.length() > 0 && line != artworkId && isValidId(line)) {
+          ids[count++] = line;
+        }
+      }
+      f.close();
+    }
+  }
+
+  // Append current artworkId at the end (most recently used)
+  if (count < (MAX_LITTLEFS_ARTWORKS + 5)) {
+    ids[count++] = artworkId;
+  }
+
+  // Write back updated LRU list
+  File f = fsPtr->open("/art/lru.txt", "w");
+  if (f) {
+    for (size_t i = 0; i < count; i++) {
+      f.println(ids[i]);
+    }
+    f.close();
+  }
+}
+
+void ArtworkCache::evictOldestIfNeeded() {
+  if (storageType != STORAGE_LITTLEFS || !fsPtr) {
+    return;
+  }
+
+  size_t totalBytes = LittleFS.totalBytes();
+  size_t usedBytes = LittleFS.usedBytes();
+  size_t freeBytes = (totalBytes > usedBytes) ? (totalBytes - usedBytes) : 0;
+
+  File dir = LittleFS.open("/art");
+  if (!dir || !dir.isDirectory()) {
+    return;
+  }
+
+  size_t fileCount = 0;
+  File entry = dir.openNextFile();
+  while (entry) {
+    if (!entry.isDirectory()) {
+      String p = entry.name();
+      if (p.endsWith(".raw")) {
+        fileCount++;
+      }
+    }
+    entry = dir.openNextFile();
+  }
+  dir.close();
+
+  // If file count exceeds MAX_LITTLEFS_ARTWORKS or free flash is under 64KB, evict oldest
+  if (fileCount >= MAX_LITTLEFS_ARTWORKS || freeBytes < 64 * 1024) {
+    String oldestId = "";
+    String remainingIds[MAX_LITTLEFS_ARTWORKS + 5];
+    size_t count = 0;
+
+    if (fsPtr->exists("/art/lru.txt")) {
+      File f = fsPtr->open("/art/lru.txt", "r");
+      if (f) {
+        while (f.available() && count < (MAX_LITTLEFS_ARTWORKS + 5)) {
+          String line = f.readStringUntil('\n');
+          line.trim();
+          if (line.length() > 0 && isValidId(line)) {
+            if (oldestId.length() == 0) {
+              oldestId = line; // First entry is the least recently used
+            } else {
+              remainingIds[count++] = line;
+            }
+          }
+        }
+        f.close();
+      }
+    }
+
+    if (oldestId.length() > 0) {
+      String targetPath = "/art/" + oldestId + ".raw";
+      Serial.printf("[ArtworkCache] LittleFS quota reached (%u files, %u bytes free). LRU evicting %s...\n",
+                    (unsigned int)fileCount, (unsigned int)freeBytes, targetPath.c_str());
+      LittleFS.remove(targetPath);
+
+      // Rewrite updated lru.txt
+      File f = fsPtr->open("/art/lru.txt", "w");
+      if (f) {
+        for (size_t i = 0; i < count; i++) {
+          f.println(remainingIds[i]);
+        }
+        f.close();
+      }
+    } else {
+      // Fallback if lru.txt was empty or missing
+      File dir2 = LittleFS.open("/art");
+      if (dir2 && dir2.isDirectory()) {
+        File ent = dir2.openNextFile();
+        while (ent) {
+          if (!ent.isDirectory() && String(ent.name()).endsWith(".raw")) {
+            String pathToRemove = ent.path();
+            Serial.printf("[ArtworkCache] Fallback evicting %s\n", pathToRemove.c_str());
+            LittleFS.remove(pathToRemove);
+            break;
+          }
+          ent = dir2.openNextFile();
+        }
+        dir2.close();
+      }
+    }
+  }
 }
 
 bool ArtworkCache::saveArtwork(const String& artworkId, const uint8_t* buffer, size_t bufferSize) {
-  if (!fsPtr || artworkId.length() == 0 || buffer == nullptr || bufferSize == 0) {
+  if (!fsPtr || !isValidId(artworkId) || buffer == nullptr || bufferSize == 0) {
     return false;
   }
+
+  // Manage flash capacity before writing to LittleFS
+  evictOldestIfNeeded();
 
   String path = "/art/" + artworkId + ".raw";
   File f = fsPtr->open(path, "w");
@@ -100,6 +261,10 @@ bool ArtworkCache::saveArtwork(const String& artworkId, const uint8_t* buffer, s
   size_t written = f.write(buffer, bufferSize);
   f.close();
 
-  Serial.printf("[ArtworkCache] Cached %u bytes to %s on %s\n", (unsigned int)written, path.c_str(), getStorageName());
-  return (written == bufferSize);
+  if (written == bufferSize) {
+    touchLRU(artworkId);
+    Serial.printf("[ArtworkCache] Cached %u bytes to %s on %s\n", (unsigned int)written, path.c_str(), getStorageName());
+    return true;
+  }
+  return false;
 }
