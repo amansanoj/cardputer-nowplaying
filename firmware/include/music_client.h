@@ -40,6 +40,6 @@ private:
   bool wsConnected;
   bool hasNewMetadata;
   TrackInfo latestMetadata;
-  portMUX_TYPE stateMux;
+  SemaphoreHandle_t wsMutex;
 };
 

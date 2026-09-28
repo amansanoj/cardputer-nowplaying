@@ -6,8 +6,13 @@
 
 DisplayUI::DisplayUI()
     : tft(TFT_CS, TFT_DC, TFT_RST), canvas(SCREEN_WIDTH, SCREEN_HEIGHT),
-      hasArtwork(false), lastTrackKey(""), sharedPauseStartTime(0),
-      sharedScrollStartTime(0), isSharedScrolling(false), lastKnownClock("") {
+      hasArtwork(false), forceRedraw(true),
+      lastRenderedElapsed(0xFFFFFFFF), lastRenderedKey(0),
+      lastRenderedState(""), lastRenderedArtworkId(""),
+      lastRenderedClock(""), lastRenderedOffsetsSum(-1),
+      lastTitle(""), lastArtist(""), lastAlbum(""),
+      sharedPauseStartTime(0), sharedScrollStartTime(0),
+      isSharedScrolling(false), lastKnownClock("") {
   memset(artworkBuffer, 0, sizeof(artworkBuffer));
 }
 
@@ -31,33 +36,33 @@ void DisplayUI::init() {
   canvas.setTextWrap(false);
   canvas.fillScreen(COLOR_BG);
   tft.drawRGBBitmap(0, 0, canvas.getBuffer(), SCREEN_WIDTH, SCREEN_HEIGHT);
+  forceRedraw = true;
 }
 
 void DisplayUI::setArtworkData(const uint8_t *rawData, size_t length) {
   size_t expectedSize = ARTWORK_SIZE * ARTWORK_SIZE * 2;
-  if (length >= expectedSize) {
-    // rawData is 16-bit big-endian RGB565 directly matching ST7789 pixel format
-    const uint16_t *pixels = reinterpret_cast<const uint16_t *>(rawData);
+  if (length >= expectedSize && rawData != nullptr) {
+    // Safely unpack 16-bit big-endian pixels without unaligned pointer casting
     for (size_t i = 0; i < ARTWORK_SIZE * ARTWORK_SIZE; i++) {
-      // Byte swap from network/big-endian to native uint16_t
-      uint16_t p = pixels[i];
-      artworkBuffer[i] = (p >> 8) | (p << 8);
+      uint8_t hi = rawData[i * 2];
+      uint8_t lo = rawData[i * 2 + 1];
+      // ST7789 native pixel format
+      artworkBuffer[i] = (uint16_t(hi) << 8) | uint16_t(lo);
     }
     hasArtwork = true;
+    forceRedraw = true;
   }
 }
 
-String DisplayUI::formatTime(uint32_t totalSeconds) {
+void DisplayUI::formatTime(uint32_t totalSeconds, char* outBuf, size_t bufSize) {
   uint32_t h = totalSeconds / 3600;
   uint32_t m = (totalSeconds % 3600) / 60;
   uint32_t s = totalSeconds % 60;
-  char buf[16];
   if (h > 0) {
-    snprintf(buf, sizeof(buf), "%u:%02u:%02u", h, m, s);
+    snprintf(outBuf, bufSize, "%u:%02u:%02u", h, m, s);
   } else {
-    snprintf(buf, sizeof(buf), "%02u:%02u", m, s);
+    snprintf(outBuf, bufSize, "%02u:%02u", m, s);
   }
-  return String(buf);
 }
 
 int16_t DisplayUI::getLoopWidth(const String &text, int16_t maxW) {
@@ -156,17 +161,26 @@ void DisplayUI::getBatteryInfo(uint8_t &pct, bool &isCharging) {
   if (smoothedMv == 0) smoothedMv = rawMv;
   else smoothedMv = (smoothedMv * 7 + rawMv) / 8;
 
-  if (smoothedMv >= 4200) {
-    isCharging = true;
+  // Charging rail typically pulls above 4250mV when plugged into USB
+  isCharging = (smoothedMv >= 4250);
+
+  // Realistic piecewise LiPo discharge curve
+  if (smoothedMv >= 4180) {
     pct = 100;
-  } else if (smoothedMv <= 3350) {
-    isCharging = false;
-    pct = 0;
+  } else if (smoothedMv >= 4000) {
+    pct = 85 + (uint8_t)(((smoothedMv - 4000) * 15) / 180);
+  } else if (smoothedMv >= 3850) {
+    pct = 60 + (uint8_t)(((smoothedMv - 3850) * 25) / 150);
+  } else if (smoothedMv >= 3700) {
+    pct = 30 + (uint8_t)(((smoothedMv - 3700) * 30) / 150);
+  } else if (smoothedMv >= 3500) {
+    pct = 10 + (uint8_t)(((smoothedMv - 3500) * 20) / 200);
+  } else if (smoothedMv >= 3300) {
+    pct = (uint8_t)(((smoothedMv - 3300) * 10) / 200);
   } else {
-    isCharging = false;
-    pct = (uint8_t)(((smoothedMv - 3350) * 100) / (4200 - 3350));
-    if (pct > 100) pct = 100;
+    pct = 0;
   }
+  if (pct > 100) pct = 100;
 #else
   // Wokwi simulation / USB DevKit fallback
   isCharging = true;
@@ -283,8 +297,10 @@ void DisplayUI::drawHeader(const String &clockTime, const String &screenTitle) {
   }
 
   // Battery Percentage Text (e.g. "95%")
-  String pctStr = String(batPct) + "%";
-  int16_t pctX = bx - 3 - (pctStr.length() * 6);
+  char pctStr[8];
+  snprintf(pctStr, sizeof(pctStr), "%u%%", batPct);
+  size_t pctLen = strlen(pctStr);
+  int16_t pctX = bx - 3 - (pctLen * 6);
   canvas.setTextSize(1);
   canvas.setTextColor(COLOR_TEXT);
   canvas.setCursor(pctX, by);
@@ -430,91 +446,46 @@ void DisplayUI::drawPlaceholderArt(int16_t x, int16_t y, int16_t size) {
 void DisplayUI::render(const TrackInfo &info, uint32_t currentElapsed, char activeKey) {
   unsigned long now = millis();
 
-  // Clear off-screen buffer
-  canvas.fillScreen(COLOR_BG);
-
-  // 1. Standard Header (Time, App Name: "Now Playing", Wi-Fi, Battery)
-  drawHeader(info.clock, "Now Playing");
-
-  // 2. Middle Area (y = 24..116)
-  // ---------------------------------------------------------------------
-  // 2A. Artwork on Left (72x72 at x = 8, y = 24)
-  // Top padding: 8px from header divider (y=16) to art/text (y=24)
-  // Bottom padding: 7px to timestamps (y=103), 7-8px from timestamps to footer
-  // Left padding: 8px, Right padding: 8px
-  // ---------------------------------------------------------------------
+  // Layout constants
   const int16_t artX = PADDING_LEFT;      // 8
   const int16_t artY = CONTENT_START_Y;  // 24
-
-  if (hasArtwork && info.isRunning && info.state != "stopped") {
-    drawArtwork(artX, artY, ARTWORK_SIZE);
-  } else {
-    drawPlaceholderArt(artX, artY, ARTWORK_SIZE);
-  }
-
-  // If paused, overlay minimalist Dynamic Island pause badge in ACCENT (#df9a9e)
-  if (info.isRunning && info.state == "paused") {
-    const int16_t badgeW = 16;
-    const int16_t badgeH = 16;
-    const int16_t badgeX = artX + ARTWORK_SIZE - badgeW - 3;
-    const int16_t badgeY = artY + ARTWORK_SIZE - badgeH - 3;
-
-    canvas.fillRoundRect(badgeX, badgeY, badgeW, badgeH, 4, COLOR_ACCENT_BG);
-    canvas.drawRoundRect(badgeX, badgeY, badgeW, badgeH, 4, COLOR_ACCENT);
-    canvas.fillRect(badgeX + 4, badgeY + 4, 2, 8, COLOR_ACCENT);
-    canvas.fillRect(badgeX + 10, badgeY + 4, 2, 8, COLOR_ACCENT);
-  }
-
-  // ---------------------------------------------------------------------
-  // 2B. Track Metadata (Right side of artwork)
-  // Reserved 2 lines for song title always, 1 line artist, 1 line album
-  // ---------------------------------------------------------------------
   const int16_t GAP = 10;
   const int16_t tx = artX + ARTWORK_SIZE + GAP;       // 8 + 72 + 10 = 90
   const int16_t textRightX = SCREEN_WIDTH - PADDING_RIGHT; // 232
   const int16_t maxW = textRightX - tx;               // 142 pixels wide
 
-  // Vertically center 4-line text block with respect to 72x72 artwork:
-  // Artwork spans y = 24..96 (center = 60).
-  // 4-line text block spans y = 32..86 (center = 59), providing clean 8px top
-  // padding and 10px bottom padding relative to the album art.
-  const int16_t line1Y = 32;                   // 32: Title Line 1 (8px padding from art top)
-  const int16_t line2Y = line1Y + 14;          // 46: Title Line 2 (Strictly reserved)
-  const int16_t line3Y = line2Y + 16;          // 62: Artist (1 line)
-  const int16_t line4Y = line3Y + 16;          // 78: Album (1 line, 10px padding from art bottom)
+  const int16_t line1Y = 32;
+  const int16_t line2Y = line1Y + 14;
+  const int16_t line3Y = line2Y + 16;
+  const int16_t line4Y = line3Y + 16;
 
-  if (!info.isRunning || info.state == "stopped") {
-    // Idle state: "Not Playing" vertically centered with respect to artwork
-    canvas.setTextSize(1);
-    canvas.setTextColor(COLOR_MUTED);
-    canvas.setCursor(tx, 56);
-    canvas.print("Not Playing");
-  } else {
-    // Split song title into up to 2 lines
-    String titleLine1 = "";
-    String titleLine2 = "";
+  String titleLine1 = "";
+  String titleLine2 = "";
+  int16_t t1Offset = 0, t2Offset = 0, artistOffset = 0, albumOffset = 0;
+  int16_t offsetSum = 0;
+
+  if (info.isRunning && info.state != "stopped") {
     splitTitle(info.title, maxW, titleLine1, titleLine2);
 
-    // Reset marquee timer when track changes
-    String currentTrackKey = info.title + "\t" + info.artist + "\t" + info.album;
-    if (currentTrackKey != lastTrackKey) {
-      lastTrackKey = currentTrackKey;
+    if (info.title != lastTitle || info.artist != lastArtist || info.album != lastAlbum) {
+      lastTitle = info.title;
+      lastArtist = info.artist;
+      lastAlbum = info.album;
       sharedPauseStartTime = now;
       sharedScrollStartTime = 0;
       isSharedScrolling = false;
+      forceRedraw = true;
     }
 
     bool hasAlbum = (info.album.length() > 0);
-
-    // Compute loop widths on shared clock for all text lines
     int16_t t1LoopW = getLoopWidth(titleLine1, maxW);
     int16_t t2LoopW = getLoopWidth(titleLine2, maxW);
     int16_t artistLoopW = getLoopWidth(info.artist, maxW);
     int16_t albumLoopW = hasAlbum ? getLoopWidth(info.album, maxW) : 0;
     int16_t maxLoopW = max(max(t1LoopW, t2LoopW), max(artistLoopW, albumLoopW));
 
-    const unsigned long PAUSE_DURATION = 10000; // Shared 10-second pause
-    const unsigned long SCROLL_SPEED = 40;      // 40ms per pixel
+    const unsigned long PAUSE_DURATION = 10000;
+    const unsigned long SCROLL_SPEED = 40;
     unsigned long maxScrollDuration = (unsigned long)maxLoopW * SCROLL_SPEED;
 
     if (maxLoopW > 0) {
@@ -543,11 +514,58 @@ void DisplayUI::render(const TrackInfo &info, uint32_t currentElapsed, char acti
       return offset;
     };
 
-    int16_t t1Offset = getLineOffset(t1LoopW);
-    int16_t t2Offset = getLineOffset(t2LoopW);
-    int16_t artistOffset = getLineOffset(artistLoopW);
-    int16_t albumOffset = getLineOffset(albumLoopW);
+    t1Offset = getLineOffset(t1LoopW);
+    t2Offset = getLineOffset(t2LoopW);
+    artistOffset = getLineOffset(artistLoopW);
+    albumOffset = getLineOffset(albumLoopW);
+    offsetSum = t1Offset + t2Offset + artistOffset + albumOffset;
+  }
 
+  // Dirty frame check: skip rendering and SPI blit if visual state has not changed
+  bool changed = forceRedraw ||
+                 (currentElapsed != lastRenderedElapsed) ||
+                 (activeKey != lastRenderedKey) ||
+                 (info.state != lastRenderedState) ||
+                 (info.artworkId != lastRenderedArtworkId) ||
+                 (info.clock != lastRenderedClock) ||
+                 (offsetSum != lastRenderedOffsetsSum);
+
+  if (!changed) {
+    return; // Screen is identical: save battery and SPI bandwidth
+  }
+
+  // Clear off-screen buffer
+  canvas.fillScreen(COLOR_BG);
+
+  // 1. Standard Header (Time, App Name: "Now Playing", Wi-Fi, Battery)
+  drawHeader(info.clock, "Now Playing");
+
+  // 2. Middle Area (y = 24..116)
+  if (hasArtwork && info.isRunning && info.state != "stopped") {
+    drawArtwork(artX, artY, ARTWORK_SIZE);
+  } else {
+    drawPlaceholderArt(artX, artY, ARTWORK_SIZE);
+  }
+
+  // If paused, overlay minimalist Dynamic Island pause badge in ACCENT (#df9a9e)
+  if (info.isRunning && info.state == "paused") {
+    const int16_t badgeW = 16;
+    const int16_t badgeH = 16;
+    const int16_t badgeX = artX + ARTWORK_SIZE - badgeW - 3;
+    const int16_t badgeY = artY + ARTWORK_SIZE - badgeH - 3;
+
+    canvas.fillRoundRect(badgeX, badgeY, badgeW, badgeH, 4, COLOR_ACCENT_BG);
+    canvas.drawRoundRect(badgeX, badgeY, badgeW, badgeH, 4, COLOR_ACCENT);
+    canvas.fillRect(badgeX + 4, badgeY + 4, 2, 8, COLOR_ACCENT);
+    canvas.fillRect(badgeX + 10, badgeY + 4, 2, 8, COLOR_ACCENT);
+  }
+
+  if (!info.isRunning || info.state == "stopped") {
+    canvas.setTextSize(1);
+    canvas.setTextColor(COLOR_MUTED);
+    canvas.setCursor(tx, 56);
+    canvas.print("Not Playing");
+  } else {
     // Line 1: Title Line 1 (white #e6e6e6)
     drawScrollingText(tx, line1Y, titleLine1, maxW, COLOR_TEXT, t1Offset);
 
@@ -560,7 +578,7 @@ void DisplayUI::render(const TrackInfo &info, uint32_t currentElapsed, char acti
     drawScrollingText(tx, line3Y, info.artist, maxW, COLOR_MUTED, artistOffset);
 
     // Line 4: Album (muted gray #808080)
-    if (hasAlbum) {
+    if (info.album.length() > 0) {
       drawScrollingText(tx, line4Y, info.album, maxW, COLOR_MUTED, albumOffset);
     }
   }
@@ -568,10 +586,16 @@ void DisplayUI::render(const TrackInfo &info, uint32_t currentElapsed, char acti
   // ---------------------------------------------------------------------
   // 2C. Timestamps & Progress Bar (y = 101..107)
   // ---------------------------------------------------------------------
+  char elapsedBuf[16];
+  char totalBuf[16];
   uint32_t clampedElapsed =
       (currentElapsed > info.duration) ? info.duration : currentElapsed;
-  String elapsedStr = formatTime(clampedElapsed);
-  String totalStr = (info.duration > 0) ? formatTime(info.duration) : "--:--";
+  formatTime(clampedElapsed, elapsedBuf, sizeof(elapsedBuf));
+  if (info.duration > 0) {
+    formatTime(info.duration, totalBuf, sizeof(totalBuf));
+  } else {
+    strcpy(totalBuf, "--:--");
+  }
 
   canvas.setTextSize(1);
   canvas.setTextColor(COLOR_MUTED);
@@ -582,16 +606,18 @@ void DisplayUI::render(const TrackInfo &info, uint32_t currentElapsed, char acti
 
   // Left elapsed timestamp
   canvas.setCursor(artX, textY);
-  canvas.print(elapsedStr);
+  canvas.print(elapsedBuf);
 
   // Right total timestamp
-  int16_t durX = textRightX - (totalStr.length() * 6);
+  size_t totalLen = strlen(totalBuf);
+  size_t elapsedLen = strlen(elapsedBuf);
+  int16_t durX = textRightX - (totalLen * 6);
   canvas.setCursor(durX, textY);
-  canvas.print(totalStr);
+  canvas.print(totalBuf);
 
   // Center progress bar in Primary (#afbdd9)
   const int16_t PAD = 5;
-  int16_t barX = artX + (elapsedStr.length() * 6) + PAD;
+  int16_t barX = artX + (elapsedLen * 6) + PAD;
   int16_t barW = (durX - PAD) - barX;
 
   if (barW > 20) {
@@ -614,9 +640,19 @@ void DisplayUI::render(const TrackInfo &info, uint32_t currentElapsed, char acti
 
   // 4. Push complete frame to physical/virtual display in a single burst
   tft.drawRGBBitmap(0, 0, canvas.getBuffer(), SCREEN_WIDTH, SCREEN_HEIGHT);
+
+  // Update dirty tracking cache
+  lastRenderedElapsed = currentElapsed;
+  lastRenderedKey = activeKey;
+  lastRenderedState = info.state;
+  lastRenderedArtworkId = info.artworkId;
+  lastRenderedClock = info.clock;
+  lastRenderedOffsetsSum = offsetSum;
+  forceRedraw = false;
 }
 
 void DisplayUI::renderStatus(const String &line1, const String &line2) {
+  forceRedraw = true;
   canvas.fillScreen(COLOR_BG);
   drawHeader("", "Now Playing");
 
@@ -654,6 +690,7 @@ void DisplayUI::renderStatus(const String &line1, const String &line2) {
 }
 
 void DisplayUI::renderSetupScreen(const String &apName, const String &apIP) {
+  forceRedraw = true;
   canvas.fillScreen(COLOR_BG);
   drawHeader("", "Now Playing");
 

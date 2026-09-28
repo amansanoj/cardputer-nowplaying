@@ -1,10 +1,9 @@
 #pragma once
 #include <stdint.h>
 
-// Target selection (can also be defined via platformio.ini build_flags)
-#if !defined(TARGET_WOKWI_SIMULATOR) && !defined(TARGET_M5_CARDPUTER_ADV) &&   \
-    !defined(TARGET_M5_CARDPUTER) && !defined(TARGET_CUSTOM_ESP32S3)
-#define TARGET_WOKWI_SIMULATOR
+// Target selection (default to Cardputer-Adv unless TARGET_WOKWI_SIMULATOR is set)
+#if !defined(TARGET_WOKWI_SIMULATOR) && !defined(TARGET_M5_CARDPUTER_ADV)
+#define TARGET_M5_CARDPUTER_ADV
 #endif
 
 #if defined(TARGET_M5_CARDPUTER_ADV)
@@ -19,28 +18,14 @@
 #define TFT_BL 38   // DISP_BL & RGB LED PWR_EN switch (Set HIGH)
 #define BAT_ADC_PIN 10 // Battery voltage sensing ADC (ratio 2.0)
 #define BOARD_NAME "Cardputer-Adv"
-#elif defined(TARGET_M5_CARDPUTER)
-// =====================================================================
-// Physical M5Stack Cardputer v1.0 / v1.1 Pinout
-// =====================================================================
-#define TFT_CS 37
-#define TFT_DC 4
-#define TFT_RST 33
-#define TFT_MOSI 6
-#define TFT_SCLK 8
-#define TFT_BL 38 // Backlight control pin
-#define BAT_ADC_PIN 10 // Battery voltage sensing ADC (ratio 2.0)
-#define BOARD_NAME "Cardputer v1.x"
-#elif defined(TARGET_CUSTOM_ESP32S3)
-// Custom board pins
-#define TFT_CS 10
-#define TFT_DC 9
-#define TFT_RST 8
-#define TFT_MOSI 11
-#define TFT_SCLK 12
-#define TFT_BL -1
-#define BAT_ADC_PIN -1
-#define BOARD_NAME "Custom ESP32-S3"
+
+// MicroSD Card SPI Configuration
+#define HAS_SD_CARD   1
+#define SD_SPI_SCK    40
+#define SD_SPI_MISO   39
+#define SD_SPI_MOSI   14
+#define SD_SPI_CS     12
+#define SD_SPI_CS_ALT 5
 #else // TARGET_WOKWI_SIMULATOR
 // =====================================================================
 // Wokwi simulation pinout (ESP32-S3 hardware SPI default pins)
@@ -53,27 +38,7 @@
 #define TFT_BL -1 // No backlight pin needed in Wokwi
 #define BAT_ADC_PIN -1
 #define BOARD_NAME "Wokwi Sim"
-#endif
 
-// =====================================================================
-// MicroSD Card SPI Configuration
-// =====================================================================
-#if defined(TARGET_M5_CARDPUTER_ADV)
-#define HAS_SD_CARD   1
-#define SD_SPI_SCK    40
-#define SD_SPI_MISO   39
-#define SD_SPI_MOSI   14
-#define SD_SPI_CS     12
-#define SD_SPI_CS_ALT 5
-#elif defined(TARGET_M5_CARDPUTER)
-#define HAS_SD_CARD   1
-#define SD_SPI_SCK    40
-#define SD_SPI_MISO   39
-#define SD_SPI_MOSI   14
-#define SD_SPI_CS     12
-#define SD_SPI_CS_ALT 12
-#else
-// Wokwi Simulator or custom targets without MicroSD hardware (protects TFT_SCLK on GPIO 12)
 #define HAS_SD_CARD   0
 #define SD_SPI_SCK    -1
 #define SD_SPI_MISO   -1

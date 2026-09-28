@@ -10,11 +10,15 @@ MusicClient::MusicClient()
     wsClient(nullptr),
     wsConnected(false),
     hasNewMetadata(false) {
-  stateMux = portMUX_INITIALIZER_UNLOCKED;
+  wsMutex = xSemaphoreCreateMutex();
 }
 
 MusicClient::~MusicClient() {
   stopWebSocket();
+  if (wsMutex) {
+    vSemaphoreDelete(wsMutex);
+    wsMutex = nullptr;
+  }
 }
 
 void MusicClient::setServer(const String& host, uint16_t port) {
@@ -58,16 +62,18 @@ void MusicClient::handleWsEvent(int32_t event_id, void* event_data) {
   switch (event_id) {
     case WEBSOCKET_EVENT_CONNECTED:
       Serial.println("[WS] Connected to Companion WebSocket server!");
-      portENTER_CRITICAL(&stateMux);
-      wsConnected = true;
-      portEXIT_CRITICAL(&stateMux);
+      if (wsMutex && xSemaphoreTake(wsMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
+        wsConnected = true;
+        xSemaphoreGive(wsMutex);
+      }
       break;
 
     case WEBSOCKET_EVENT_DISCONNECTED:
       Serial.println("[WS] Disconnected from Companion WebSocket server.");
-      portENTER_CRITICAL(&stateMux);
-      wsConnected = false;
-      portEXIT_CRITICAL(&stateMux);
+      if (wsMutex && xSemaphoreTake(wsMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
+        wsConnected = false;
+        xSemaphoreGive(wsMutex);
+      }
       break;
 
     case WEBSOCKET_EVENT_DATA:
@@ -90,14 +96,16 @@ void MusicClient::handleWsEvent(int32_t event_id, void* event_data) {
           if (doc["epoch"].is<long>()) {
             long epoch = doc["epoch"].as<long>();
             long tzOffset = doc["tz_offset"] | 0;
-            timeval tv = { epoch + tzOffset, 0 };
+            timeval tv = { epoch, 0 };
             settimeofday(&tv, nullptr);
+            configTime(tzOffset, 0, "pool.ntp.org", "time.google.com");
           }
 
-          portENTER_CRITICAL(&stateMux);
-          latestMetadata = info;
-          hasNewMetadata = true;
-          portEXIT_CRITICAL(&stateMux);
+          if (wsMutex && xSemaphoreTake(wsMutex, pdMS_TO_TICKS(100)) == pdTRUE) {
+            latestMetadata = info;
+            hasNewMetadata = true;
+            xSemaphoreGive(wsMutex);
+          }
         }
       }
       break;
@@ -146,10 +154,11 @@ void MusicClient::stopWebSocket() {
     esp_websocket_client_destroy(wsClient);
     wsClient = nullptr;
   }
-  portENTER_CRITICAL(&stateMux);
-  wsConnected = false;
-  hasNewMetadata = false;
-  portEXIT_CRITICAL(&stateMux);
+  if (wsMutex && xSemaphoreTake(wsMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
+    wsConnected = false;
+    hasNewMetadata = false;
+    xSemaphoreGive(wsMutex);
+  }
 }
 
 bool MusicClient::isWsConnected() const {
@@ -158,13 +167,14 @@ bool MusicClient::isWsConnected() const {
 
 bool MusicClient::popTrackUpdate(TrackInfo& info) {
   bool updated = false;
-  portENTER_CRITICAL(&stateMux);
-  if (hasNewMetadata) {
-    info = latestMetadata;
-    hasNewMetadata = false;
-    updated = true;
+  if (wsMutex && xSemaphoreTake(wsMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
+    if (hasNewMetadata) {
+      info = latestMetadata;
+      hasNewMetadata = false;
+      updated = true;
+    }
+    xSemaphoreGive(wsMutex);
   }
-  portEXIT_CRITICAL(&stateMux);
   return updated;
 }
 
@@ -249,8 +259,9 @@ bool MusicClient::fetchMetadata(TrackInfo& info) {
   if (doc["epoch"].is<long>()) {
     long epoch = doc["epoch"].as<long>();
     long tzOffset = doc["tz_offset"] | 0;
-    timeval tv = { epoch + tzOffset, 0 };
+    timeval tv = { epoch, 0 };
     settimeofday(&tv, nullptr);
+    configTime(tzOffset, 0, "pool.ntp.org", "time.google.com");
   }
 
   return true;
@@ -303,9 +314,10 @@ bool MusicClient::fetchArtwork(uint8_t* buffer, size_t bufferSize) {
 
 bool MusicClient::sendCommand(const String& action) {
   bool wsOk = false;
-  portENTER_CRITICAL(&stateMux);
-  wsOk = (wsClient != nullptr && wsConnected);
-  portEXIT_CRITICAL(&stateMux);
+  if (wsMutex && xSemaphoreTake(wsMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
+    wsOk = (wsClient != nullptr && wsConnected);
+    xSemaphoreGive(wsMutex);
+  }
 
   if (wsOk) {
     String payload = "{\"action\":\"" + action + "\"}";

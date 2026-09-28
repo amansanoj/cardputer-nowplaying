@@ -48,6 +48,9 @@ public:
   void drawFooter(const FooterControl* controls, size_t count);
   void drawPlaybackFooter(const String& state, char activeKey = 0);
 
+  // Force redraw on next render cycle
+  void markDirty() { forceRedraw = true; }
+
   // Modular text helper for fixed 2-line title layout
   static void splitTitle(const String& title, int16_t maxW, String& line1, String& line2);
 
@@ -57,8 +60,19 @@ private:
   uint16_t artworkBuffer[ARTWORK_SIZE * ARTWORK_SIZE];
   bool hasArtwork;
 
+  // Dirty frame repaint optimizations
+  bool forceRedraw;
+  uint32_t lastRenderedElapsed;
+  char lastRenderedKey;
+  String lastRenderedState;
+  String lastRenderedArtworkId;
+  String lastRenderedClock;
+  int16_t lastRenderedOffsetsSum;
+
   // Shared Synchronized Marquee Timing
-  String lastTrackKey;
+  String lastTitle;
+  String lastArtist;
+  String lastAlbum;
   unsigned long sharedPauseStartTime;
   unsigned long sharedScrollStartTime;
   bool isSharedScrolling;
@@ -70,7 +84,7 @@ private:
   void drawControlIcon(int16_t x, int16_t y, ControlIcon icon, uint16_t color);
   void drawScrollingText(int16_t x, int16_t y, const String& text, int16_t maxW, uint16_t color, int16_t offset);
   int16_t getLoopWidth(const String& text, int16_t maxW);
-  String formatTime(uint32_t totalSeconds);
+  static void formatTime(uint32_t totalSeconds, char* outBuf, size_t bufSize);
 };
 
 
