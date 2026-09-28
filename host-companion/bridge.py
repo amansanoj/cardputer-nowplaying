@@ -1,16 +1,14 @@
 #!/usr/bin/env python3
 """
-Cardputer Now Playing - macOS Companion Bridge
-Query Music.app via native AppleScript/JXA, downscale cover art to 72x72 RGB565/JPEG,
-and serve HTTP endpoints for ESP32 / Wokwi simulator.
-
-Endpoints:
-  GET /api/now-playing : Current track metadata & playback state (JSON)
-  GET /artwork.raw     : 90x90 16-bit RGB565 binary artwork (16,200 bytes)
-  GET /artwork.rgb565  : Alias for /artwork.raw
-  GET /artwork.jpg     : 90x90 downscaled JPEG
-  GET /health          : Status check
-  GET /                : Minimalist web preview & diagnostics dashboard
+Cardputer Now Playing - Unified macOS Companion Bridge
+======================================================
+Unified companion daemon for M5Stack Cardputer-Adv and Wokwi Simulator.
+Supports:
+  - Apple Music & Spotify playback detection and controls
+  - In-memory thumbnail downscaling & RGB565 generation (Pillow + sips fallback)
+  - RFC 6455 WebSocket push & HTTP REST endpoints (port 58329)
+  - Bluetooth Low Energy (BLE) direct wireless connection for physical Cardputer-Adv
+  - Transports: --transport [auto|both|wifi|ble]
 """
 
 import http.server
@@ -27,10 +25,403 @@ import sys
 import time
 import tempfile
 import argparse
+import html
+import atexit
+import shutil
+import unicodedata
+import io
+import asyncio
+from typing import Optional
 
-ARTWORK_SIZE = 72  # 72x72 pixels thumbnail
-CACHE_DIR = tempfile.mkdtemp(prefix="cardputer_music_")
+try:
+    from PIL import Image
+    HAS_PIL = True
+except ImportError:
+    HAS_PIL = False
 
+try:
+    from bleak import BleakScanner, BleakClient
+    HAS_BLEAK = True
+except ImportError:
+    BleakScanner, BleakClient = None, None
+    HAS_BLEAK = False
+
+# BLE UUIDs matching firmware/include/ble_manager.h
+BLE_DEVICE_NAME        = "Cardputer-NowPlaying"
+BLE_SERVICE_UUID       = "4fafc201-1fb5-459e-8fcc-c5c9c331914b"
+BLE_CHAR_METADATA_UUID = "beb5483e-36e1-4688-b7f5-ea07361b26a8"
+BLE_CHAR_CONTROL_UUID  = "beb5483f-36e1-4688-b7f5-ea07361b26a8"
+BLE_CHAR_ARTWORK_UUID  = "beb54840-36e1-4688-b7f5-ea07361b26a8"
+
+ARTWORK_SIZE = 72
+CHUNK_SIZE = 480  # fits safely inside 512 MTU
+DEFAULT_PORT = 58329
+
+CACHE_DIR = tempfile.mkdtemp(prefix="cardputer_companion_")
+atexit.register(shutil.rmtree, CACHE_DIR, ignore_errors=True)
+
+
+def clean_text(text: str) -> str:
+    """Sanitize track metadata to clean ASCII for ST7789 embedded canvas."""
+    if not text:
+        return ""
+    replacements = {
+        '\u2018': "'", '\u2019': "'",
+        '\u201c': '"', '\u201d': '"',
+        '\u2013': '-', '\u2014': '-',
+        '\u2026': '...', '\u00a0': ' '
+    }
+    for orig, rep in replacements.items():
+        text = text.replace(orig, rep)
+    text = unicodedata.normalize('NFKD', text).encode('ascii', 'ignore').decode('ascii')
+    # Collapse consecutive spaces
+    import re
+    text = re.sub(r' +', ' ', text)
+    return text.strip()
+
+
+def rgb_to_rgb565(raw_rgb: bytes, width: int, height: int) -> bytes:
+    """Convert raw RGB24 bytes to big-endian RGB565 byte buffer."""
+    out = bytearray(width * height * 2)
+    for i in range(width * height):
+        r = raw_rgb[i * 3]
+        g = raw_rgb[i * 3 + 1]
+        b = raw_rgb[i * 3 + 2]
+        val = ((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (b >> 3)
+        out[i * 2] = (val >> 8) & 0xFF
+        out[i * 2 + 1] = val & 0xFF
+    return bytes(out)
+
+
+def generate_default_rgb565(size: int = ARTWORK_SIZE) -> bytes:
+    """Generate default placeholder art matching the embedded theme."""
+    out = bytearray(size * size * 2)
+    bg_val = 0x0842   # #0d0d0d in RGB565
+    bar_val = 0xB5F6  # #afbdd9 Primary
+    note_val = 0xE71C # #e6e6e6 Text
+
+    for y in range(size):
+        for x in range(size):
+            idx = (y * size + x) * 2
+            val = bg_val
+            # Simple centered music icon note
+            cx, cy = size // 2, size // 2
+            if (cx - 6 <= x <= cx - 4 and cy - 10 <= y <= cy + 6) or \
+               (cx + 4 <= x <= cx + 6 and cy - 13 <= y <= cy + 3) or \
+               (cx - 6 <= x <= cx + 6 and cy - 13 <= y <= cy - 10):
+                val = bar_val
+            elif ((x - (cx - 7)) ** 2 + (y - (cy + 5)) ** 2 <= 9) or \
+                 ((x - (cx + 3)) ** 2 + (y - (cy + 2)) ** 2 <= 9):
+                val = note_val
+            out[idx] = (val >> 8) & 0xFF
+            out[idx + 1] = val & 0xFF
+    return bytes(out)
+
+
+class MusicController:
+    """Unified player controller supporting Apple Music and Spotify."""
+
+    def __init__(self, art_size: int = ARTWORK_SIZE):
+        self.art_size = art_size
+        self.last_track_key = None
+        self.cached_rgb565 = generate_default_rgb565(art_size)
+        self.cached_jpeg = b""
+        self.cached_art_id = "default"
+        self.last_query_time = 0
+        self.cached_meta = None
+        self.active_player = "Music"  # "Music" or "Spotify"
+
+    def query(self) -> dict:
+        now_ts = time.time()
+        # Throttled query: max once per 250ms
+        if now_ts - self.last_query_time < 0.25 and self.cached_meta:
+            return self.cached_meta
+
+        tz_offset = -time.timezone if (time.daylight == 0) else -time.altzone
+        clock_str = time.strftime("%H:%M")
+
+        jxa_script = '''
+        (function() {
+            var musicRunning = false;
+            var spotifyRunning = false;
+            try { musicRunning = Application("Music").running(); } catch(e) {}
+            try { spotifyRunning = Application("Spotify").running(); } catch(e) {}
+
+            if (musicRunning) {
+                var music = Application("Music");
+                var mState = music.playerState();
+                if (mState === "playing" || (!spotifyRunning && mState !== "stopped")) {
+                    var mTrack = music.currentTrack;
+                    return JSON.stringify({
+                        player: "Music",
+                        running: true,
+                        state: mState,
+                        title: mTrack.name() || "",
+                        artist: mTrack.artist() || "",
+                        album: mTrack.album() || "",
+                        duration: Math.round(mTrack.duration() || 0),
+                        elapsed: Math.round(music.playerPosition() || 0),
+                        has_art: mTrack.artworks.length > 0
+                    });
+                }
+            }
+
+            if (spotifyRunning) {
+                var spotify = Application("Spotify");
+                var sState = spotify.playerState();
+                if (sState !== "stopped") {
+                    var sTrack = spotify.currentTrack;
+                    return JSON.stringify({
+                        player: "Spotify",
+                        running: true,
+                        state: sState,
+                        title: sTrack.name() || "",
+                        artist: sTrack.artist() || "",
+                        album: sTrack.album() || "",
+                        duration: Math.round((sTrack.duration() || 0) / 1000),
+                        elapsed: Math.round(spotify.playerPosition() || 0),
+                        has_art: (sTrack.artworkUrl() || "").length > 0,
+                        artwork_url: sTrack.artworkUrl() || ""
+                    });
+                }
+            }
+
+            if (musicRunning) {
+                return JSON.stringify({ player: "Music", running: true, state: "stopped" });
+            }
+            if (spotifyRunning) {
+                return JSON.stringify({ player: "Spotify", running: true, state: "stopped" });
+            }
+            return JSON.stringify({ player: "none", running: false, state: "stopped" });
+        })();
+        '''
+
+        try:
+            res = subprocess.run(
+                ['osascript', '-l', 'JavaScript', '-e', jxa_script],
+                capture_output=True,
+                text=True,
+                timeout=1.5
+            )
+            out = res.stdout.strip()
+            data = json.loads(out) if out else {"running": False, "state": "stopped"}
+        except Exception:
+            data = {"running": False, "state": "stopped"}
+
+        self.last_query_time = now_ts
+        self.active_player = data.get("player", "Music")
+        running = data.get("running", False)
+        state = data.get("state", "stopped")
+
+        if not running or state == "stopped":
+            meta = {
+                "running": running,
+                "state": "stopped",
+                "title": "",
+                "artist": "",
+                "album": "",
+                "duration": 0,
+                "elapsed": 0,
+                "artwork_id": "none",
+                "clock": clock_str,
+                "epoch": int(now_ts),
+                "tz_offset": tz_offset,
+                "player": self.active_player
+            }
+            self.cached_meta = meta
+            return meta
+
+        title = clean_text(data.get("title", ""))
+        artist = clean_text(data.get("artist", ""))
+        album = clean_text(data.get("album", ""))
+        duration = data.get("duration", 0)
+        elapsed = data.get("elapsed", 0)
+        has_art = data.get("has_art", False)
+        art_url = data.get("artwork_url", "")
+
+        track_key = f"{self.active_player}_{title}_{artist}_{album}"
+        if track_key != self.last_track_key:
+            self.last_track_key = track_key
+            if has_art:
+                self._extract_artwork(track_key, art_url)
+            else:
+                self.cached_art_id = "default"
+                self.cached_rgb565 = generate_default_rgb565(self.art_size)
+                self.cached_jpeg = b""
+
+        meta = {
+            "running": True,
+            "state": state.lower(),
+            "title": title,
+            "artist": artist,
+            "album": album,
+            "duration": duration,
+            "elapsed": elapsed,
+            "artwork_id": self.cached_art_id,
+            "clock": clock_str,
+            "epoch": int(now_ts),
+            "tz_offset": tz_offset,
+            "player": self.active_player
+        }
+        self.cached_meta = meta
+        return meta
+
+    def execute_command(self, cmd: str) -> bool:
+        """Execute playback action on the currently active media player."""
+        player = self.active_player if self.active_player in ["Music", "Spotify"] else "Music"
+        actions = {
+            "toggle": f'tell application "{player}" to playpause',
+            "play": f'tell application "{player}" to play',
+            "pause": f'tell application "{player}" to pause',
+            "next": f'tell application "{player}" to next track',
+            "prev": f'tell application "{player}" to previous track',
+            "previous": f'tell application "{player}" to previous track',
+            "ff": f'tell application "{player}" to set player position to (player position + 10)',
+            "rw": f'tell application "{player}" to set player position to (player position - 10)',
+            "forward": f'tell application "{player}" to set player position to (player position + 10)',
+            "backward": f'tell application "{player}" to set player position to (player position - 10)'
+        }
+        if cmd not in actions:
+            return False
+
+        try:
+            subprocess.run(["osascript", "-e", actions[cmd]], timeout=1.0)
+            self.last_query_time = 0  # Invalidate cached metadata
+            return True
+        except Exception as e:
+            print(f"[Control] Failed to execute {cmd} on {player}: {e}", file=sys.stderr)
+            return False
+
+    def _extract_artwork(self, track_key: str, art_url: str = ""):
+        """Extract artwork in-memory via Pillow when possible, falling back to sips."""
+        raw_art_path = os.path.join(CACHE_DIR, "raw_art.tmp")
+
+        if self.active_player == "Spotify" and art_url.startswith("http"):
+            try:
+                import urllib.request
+                with urllib.request.urlopen(art_url, timeout=3.0) as resp:
+                    raw_data = resp.read()
+                if self._process_image_bytes(raw_data, track_key):
+                    return
+            except Exception as e:
+                print(f"[Artwork] Spotify URL fetch failed: {e}", file=sys.stderr)
+
+        # Apple Music extraction via osascript
+        applescript = f'''
+        set filePath to "{raw_art_path}"
+        tell application "Music"
+            if (count of artworks of current track) > 0 then
+                set rawData to raw data of artwork 1 of current track
+                set fp to open for access (POSIX file filePath) with write permission
+                set eof fp to 0
+                write rawData to fp
+                close access fp
+                return "OK"
+            else
+                return "NO_ART"
+            end if
+        end tell
+        '''
+        try:
+            res = subprocess.run(['osascript', '-e', applescript], capture_output=True, text=True, timeout=2.5)
+            if "OK" in res.stdout and os.path.exists(raw_art_path):
+                with open(raw_art_path, 'rb') as f:
+                    raw_data = f.read()
+                if self._process_image_bytes(raw_data, track_key):
+                    return
+        except Exception as e:
+            print(f"[Artwork] AppleScript extraction failed: {e}", file=sys.stderr)
+
+        # Fallback to default placeholder
+        self.cached_art_id = "default"
+        self.cached_rgb565 = generate_default_rgb565(self.art_size)
+        self.cached_jpeg = b""
+
+    def _process_image_bytes(self, raw_data: bytes, track_key: str) -> bool:
+        """Process image in-memory using Pillow or fallback to sips on disk."""
+        if HAS_PIL:
+            try:
+                img = Image.open(io.BytesIO(raw_data)).convert('RGB')
+                img = img.resize((self.art_size, self.art_size), Image.Resampling.LANCZOS)
+                raw_rgb = img.tobytes()
+                self.cached_rgb565 = rgb_to_rgb565(raw_rgb, self.art_size, self.art_size)
+
+                bio = io.BytesIO()
+                img.save(bio, format="JPEG", quality=85)
+                self.cached_jpeg = bio.getvalue()
+
+                self.cached_art_id = hashlib.md5(f"{track_key}_{self.cached_rgb565[:64]}".encode()).hexdigest()[:12]
+                return True
+            except Exception as e:
+                print(f"[Artwork] Pillow in-memory resize failed: {e}", file=sys.stderr)
+
+        # Fallback to sips
+        try:
+            tmp_in = os.path.join(CACHE_DIR, "tmp_in.dat")
+            tmp_bmp = os.path.join(CACHE_DIR, "tmp_out.bmp")
+            tmp_jpg = os.path.join(CACHE_DIR, "tmp_out.jpg")
+            with open(tmp_in, 'wb') as f:
+                f.write(raw_data)
+
+            subprocess.run([
+                'sips', '-s', 'format', 'bmp',
+                '-z', str(self.art_size), str(self.art_size),
+                tmp_in, '--out', tmp_bmp
+            ], capture_output=True, timeout=2.5)
+
+            subprocess.run([
+                'sips', '-s', 'format', 'jpeg',
+                '-z', str(self.art_size), str(self.art_size),
+                tmp_in, '--out', tmp_jpg
+            ], capture_output=True, timeout=2.5)
+
+            if os.path.exists(tmp_bmp):
+                with open(tmp_bmp, 'rb') as f:
+                    bmp_data = f.read()
+                self.cached_rgb565 = self._parse_bmp(bmp_data)
+                self.cached_art_id = hashlib.md5(f"{track_key}_{self.cached_rgb565[:64]}".encode()).hexdigest()[:12]
+
+            if os.path.exists(tmp_jpg):
+                with open(tmp_jpg, 'rb') as f:
+                    self.cached_jpeg = f.read()
+
+            return len(self.cached_rgb565) == (self.art_size * self.art_size * 2)
+        except Exception as e:
+            print(f"[Artwork] sips fallback failed: {e}", file=sys.stderr)
+            return False
+
+    def _parse_bmp(self, data: bytes) -> bytes:
+        """Parse standard 24bpp BMP into RGB565 handling both bottom-up and top-down DIBs."""
+        try:
+            offset = struct.unpack('<I', data[10:14])[0]
+            width = abs(struct.unpack('<i', data[18:22])[0])
+            raw_height = struct.unpack('<i', data[22:26])[0]
+            is_bottom_up = raw_height > 0
+            height = abs(raw_height)
+            bpp = struct.unpack('<H', data[28:30])[0]
+
+            row_size = ((bpp * width + 31) // 32) * 4
+            bytes_per_pixel = bpp // 8
+            out = bytearray(width * height * 2)
+
+            for y in range(height):
+                bmp_y = (height - 1 - y) if is_bottom_up else y
+                row_offset = offset + bmp_y * row_size
+                for x in range(width):
+                    px = row_offset + x * bytes_per_pixel
+                    b, g, r = data[px], data[px + 1], data[px + 2]
+                    val = ((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (b >> 3)
+                    idx = (y * width + x) * 2
+                    out[idx] = (val >> 8) & 0xFF
+                    out[idx + 1] = val & 0xFF
+            return bytes(out)
+        except Exception:
+            return generate_default_rgb565(self.art_size)
+
+
+# =============================================================================
+# WebSocket & HTTP Server for Local Wi-Fi / Wokwi Simulator
+# =============================================================================
 
 def make_ws_frame(data: bytes, opcode: int = 0x1) -> bytes:
     """Create an unmasked RFC 6455 WebSocket frame from server to client."""
@@ -48,7 +439,7 @@ def make_ws_frame(data: bytes, opcode: int = 0x1) -> bytes:
 
 
 def read_ws_frame(sock: socket.socket) -> tuple:
-    """Read and decode a masked or unmasked RFC 6455 WebSocket frame."""
+    """Read and decode an RFC 6455 WebSocket frame."""
     try:
         header = sock.recv(2)
         if len(header) < 2:
@@ -60,24 +451,20 @@ def read_ws_frame(sock: socket.socket) -> tuple:
 
         if payload_len == 126:
             ext = sock.recv(2)
-            if len(ext) < 2:
-                return 0x8, b""
+            if len(ext) < 2: return 0x8, b""
             payload_len = struct.unpack('!H', ext)[0]
         elif payload_len == 127:
             ext = sock.recv(8)
-            if len(ext) < 8:
-                return 0x8, b""
+            if len(ext) < 8: return 0x8, b""
             payload_len = struct.unpack('!Q', ext)[0]
 
         if masked:
             mask = sock.recv(4)
-            if len(mask) < 4:
-                return 0x8, b""
+            if len(mask) < 4: return 0x8, b""
             payload = bytearray()
             while len(payload) < payload_len:
                 chunk = sock.recv(payload_len - len(payload))
-                if not chunk:
-                    return 0x8, b""
+                if not chunk: return 0x8, b""
                 payload.extend(chunk)
             unmasked = bytearray(payload_len)
             for i in range(payload_len):
@@ -87,400 +474,71 @@ def read_ws_frame(sock: socket.socket) -> tuple:
             payload = bytearray()
             while len(payload) < payload_len:
                 chunk = sock.recv(payload_len - len(payload))
-                if not chunk:
-                    return 0x8, b""
+                if not chunk: return 0x8, b""
                 payload.extend(chunk)
             return opcode, bytes(payload)
     except (socket.error, OSError):
         return 0x8, b""
 
-class MusicBridge:
-    def __init__(self, art_size=ARTWORK_SIZE):
-        self.art_size = art_size
-        self.last_track_key = None
-        now_ts = time.time()
-        tz_offset = -time.timezone if (time.daylight == 0) else -time.altzone
-        self.last_metadata = {
-            "running": False,
-            "state": "stopped",
-            "title": "",
-            "artist": "",
-            "album": "",
-            "duration": 0,
-            "elapsed": 0,
-            "artwork_id": "none",
-            "clock": time.strftime("%H:%M"),
-            "epoch": int(now_ts),
-            "tz_offset": tz_offset
-        }
-        self.raw_rgb565 = self._generate_default_rgb565()
-        self.jpeg_data = b""
-        self.last_query_time = 0
-        self.cached_query = None
+
+class CompanionBridge:
+    def __init__(self, controller: MusicController):
+        self.controller = controller
         self.ws_clients = set()
         self.ws_lock = threading.Lock()
-        self.poller_thread = None
+        self.last_broadcast_state = {}
+        self.running = True
 
-    def start_poller(self):
-        """Start background daemon poller to push state changes over WebSocket."""
-        if self.poller_thread is None:
-            self.poller_thread = threading.Thread(target=self._ws_poller, daemon=True)
-            self.poller_thread.start()
+        self.poller_thread = threading.Thread(target=self._ws_poller, daemon=True)
+        self.poller_thread.start()
 
-    def _ws_poller(self):
-        while True:
-            time.sleep(0.2)
-            try:
-                with self.ws_lock:
-                    num_clients = len(self.ws_clients)
-                if num_clients > 0:
-                    old_state = self.last_metadata.get("state")
-                    old_track = self.last_metadata.get("artwork_id")
-                    old_elapsed = self.last_metadata.get("elapsed", 0)
-
-                    meta = self.query_music()
-                    new_state = meta.get("state")
-                    new_track = meta.get("artwork_id")
-                    new_elapsed = meta.get("elapsed", 0)
-
-                    # Broadcast on state or track change, or advancing elapsed while playing
-                    if (new_state != old_state or
-                        new_track != old_track or
-                        abs(new_elapsed - old_elapsed) >= 1 or
-                        new_state == "playing"):
-                        self.broadcast_metadata()
-            except Exception:
-                pass
-
-    def broadcast_metadata(self):
-        """Broadcast latest metadata JSON frame to all active WebSocket clients."""
+    def add_ws_client(self, client_sock):
         with self.ws_lock:
-            if not self.ws_clients:
-                return
-            payload = json.dumps(self.last_metadata).encode('utf-8')
-            frame = make_ws_frame(payload, opcode=0x1)
-            dead_clients = set()
-            for client_sock in list(self.ws_clients):
-                try:
-                    client_sock.sendall(frame)
-                except Exception:
-                    dead_clients.add(client_sock)
-            for dead in dead_clients:
-                self.ws_clients.discard(dead)
-                try:
-                    dead.close()
-                except Exception:
-                    pass
-
-    def handle_ws_client(self, sock: socket.socket):
-        """Handle persistent WebSocket connection from Cardputer or browser."""
-        with self.ws_lock:
-            self.ws_clients.add(sock)
-
-        # Send initial state immediately
+            self.ws_clients.add(client_sock)
+        # Immediate sync on connection
+        meta = self.controller.query()
+        frame = make_ws_frame(json.dumps(meta).encode('utf-8'))
         try:
-            init_payload = json.dumps(self.last_metadata).encode('utf-8')
-            sock.sendall(make_ws_frame(init_payload, opcode=0x1))
-        except Exception:
-            with self.ws_lock:
-                self.ws_clients.discard(sock)
-            return
+            client_sock.sendall(frame)
+        except (socket.error, OSError):
+            self.remove_ws_client(client_sock)
 
-        while True:
-            opcode, payload = read_ws_frame(sock)
-            if opcode == 0x8:  # Close frame
-                break
-            elif opcode == 0x9:  # Ping frame -> reply Pong
-                try:
-                    sock.sendall(make_ws_frame(payload, opcode=0xA))
-                except Exception:
-                    break
-            elif opcode == 0x1:  # Text frame (e.g. {"action": "toggle"})
-                try:
-                    msg = json.loads(payload.decode('utf-8'))
-                    action = msg.get("action")
-                    if action:
-                        self.control_playback(action)
-                        self.query_music(force=True)
-                        self.broadcast_metadata()
-                except Exception as e:
-                    print(f"[WS] Message handle error: {e}", file=sys.stderr)
-            elif opcode == 0x0:
-                continue
-
+    def remove_ws_client(self, client_sock):
         with self.ws_lock:
-            self.ws_clients.discard(sock)
+            self.ws_clients.discard(client_sock)
         try:
-            sock.close()
+            client_sock.close()
         except Exception:
             pass
 
-    def control_playback(self, action):
-        """Send playback commands to Music.app via AppleScript."""
-        cmd_map = {
-            "play": 'tell application "Music" to play',
-            "pause": 'tell application "Music" to pause',
-            "toggle": 'tell application "Music" to playpause',
-            "playpause": 'tell application "Music" to playpause',
-            "next": 'tell application "Music" to next track',
-            "previous": 'tell application "Music" to previous track',
-            "forward": 'tell application "Music" to set player position to ((player position) + 10)',
-            "backward": 'tell application "Music" to set player position to ((player position) - 10)',
-            "seek_forward": 'tell application "Music" to set player position to ((player position) + 10)',
-            "seek_backward": 'tell application "Music" to set player position to ((player position) - 10)',
-        }
-        script = cmd_map.get(action.lower())
-        if not script:
-            return False, "Unknown action"
-        try:
-            subprocess.run(["osascript", "-e", script], check=True, timeout=2)
-            self.cached_query = None
-            return True, "Success"
-        except Exception as e:
-            return False, str(e)
+    def broadcast_metadata(self, meta):
+        frame = make_ws_frame(json.dumps(meta).encode('utf-8'))
+        with self.ws_lock:
+            dead_clients = []
+            for client_sock in list(self.ws_clients):
+                try:
+                    client_sock.sendall(frame)
+                except (socket.error, OSError):
+                    dead_clients.append(client_sock)
+            for dead in dead_clients:
+                self.ws_clients.discard(dead)
+                try: dead.close()
+                except Exception: pass
 
-    def _generate_default_rgb565(self):
-        """Generate a 90x90 black square with a minimalist crisp white music note."""
-        buf = bytearray(self.art_size * self.art_size * 2)
-        # All black 0x0000
-        # Draw a small 16x16 minimalist musical note in the center
-        cx = self.art_size // 2
-        cy = self.art_size // 2
-        white_hi = 0xFF
-        white_lo = 0xFF
-
-        def set_pixel(x, y):
-            if 0 <= x < self.art_size and 0 <= y < self.art_size:
-                idx = (y * self.art_size + x) * 2
-                buf[idx] = white_hi
-                buf[idx + 1] = white_lo
-
-        # Note stem 1 (left)
-        for y in range(cy - 12, cy + 8):
-            set_pixel(cx - 6, y)
-            set_pixel(cx - 5, y)
-        # Note stem 2 (right)
-        for y in range(cy - 16, cy + 4):
-            set_pixel(cx + 6, y)
-            set_pixel(cx + 7, y)
-        # Top connecting beam
-        for x in range(cx - 6, cx + 8):
-            # angled beam
-            y_beam = cy - 12 - int((x - (cx - 6)) * 0.3)
-            set_pixel(x, y_beam)
-            set_pixel(x, y_beam - 1)
-            set_pixel(x, y_beam - 2)
-        # Note heads (filled circles)
-        for dx in range(-4, 3):
-            for dy in range(-3, 4):
-                if dx*dx + dy*dy <= 9:
-                    set_pixel(cx - 7 + dx, cy + 7 + dy)
-                    set_pixel(cx + 5 + dx, cy + 3 + dy)
-
-        return bytes(buf)
-
-    def query_music(self, force=False):
-        """Run JXA script to get current track metadata from Music.app."""
-        now = time.time()
-        # Rate limit sub-process calls to at most once per 200ms unless forced
-        if not force and (now - self.last_query_time < 0.2) and self.cached_query:
-            return self.cached_query
-
-        jxa_script = '''
-        var music = Application("Music");
-        if (!music.running()) {
-            JSON.stringify({running: false, state: "stopped"});
-        } else {
-            var state = music.playerState();
-            if (state === "stopped") {
-                JSON.stringify({running: true, state: "stopped"});
-            } else {
-                var track = music.currentTrack;
-                var info = {
-                    running: true,
-                    state: state,
-                    title: track.name() || "",
-                    artist: track.artist() || "",
-                    album: track.album() || "",
-                    duration: Math.round(track.duration() || 0),
-                    elapsed: Math.round(music.playerPosition() || 0),
-                    has_artwork: track.artworks.length > 0
-                };
-                JSON.stringify(info);
-            }
-        }
-        '''
-        try:
-            res = subprocess.run(
-                ['osascript', '-l', 'JavaScript', '-e', jxa_script],
-                capture_output=True,
-                text=True,
-                timeout=2.0
-            )
-            out = res.stdout.strip()
-            if out:
-                data = json.loads(out)
-            else:
-                data = {"running": False, "state": "stopped"}
-        except Exception as e:
-            data = {"running": False, "state": "error", "error": str(e)}
-
-        self.last_query_time = now
-        self.cached_query = data
-        self._update_state(data)
-        return self.last_metadata
-
-    def _update_state(self, data):
-        state = data.get("state", "stopped")
-        running = data.get("running", False)
-
-        now_ts = time.time()
-        tz_offset = -time.timezone if (time.daylight == 0) else -time.altzone
-
-        if not running or state == "stopped":
-            self.last_metadata = {
-                "running": running,
-                "state": "stopped",
-                "title": "",
-                "artist": "",
-                "album": "",
-                "duration": 0,
-                "elapsed": 0,
-                "artwork_id": "none",
-                "clock": time.strftime("%H:%M"),
-                "epoch": int(now_ts),
-                "tz_offset": tz_offset
-            }
-            return
-
-        title = data.get("title", "")
-        artist = data.get("artist", "")
-        album = data.get("album", "")
-        duration = data.get("duration", 0)
-        elapsed = data.get("elapsed", 0)
-        has_art = data.get("has_artwork", False)
-
-        track_key = f"{title}_{artist}_{album}"
-        if track_key != self.last_track_key:
-            self.last_track_key = track_key
-            if has_art:
-                self._extract_and_convert_artwork(track_key)
-            else:
-                self.raw_rgb565 = self._generate_default_rgb565()
-                self.jpeg_data = b""
-                self.last_metadata["artwork_id"] = "default"
-
-        artwork_id = hashlib.md5(f"{track_key}_{len(self.raw_rgb565)}".encode()).hexdigest()[:12]
-        self.last_metadata = {
-            "running": True,
-            "state": state,
-            "title": title,
-            "artist": artist,
-            "album": album,
-            "duration": duration,
-            "elapsed": elapsed,
-            "artwork_id": artwork_id,
-            "clock": time.strftime("%H:%M"),
-            "epoch": int(now_ts),
-            "tz_offset": tz_offset
-        }
-
-    def _extract_and_convert_artwork(self, track_key):
-        """Extract raw artwork via AppleScript and downscale using macOS sips."""
-        raw_art_path = os.path.join(CACHE_DIR, "raw_art.tmp")
-        bmp_art_path = os.path.join(CACHE_DIR, f"art_{self.art_size}.bmp")
-        jpg_art_path = os.path.join(CACHE_DIR, f"art_{self.art_size}.jpg")
-
-        applescript = f'''
-        set filePath to "{raw_art_path}"
-        tell application "Music"
-            if (count of artworks of current track) > 0 then
-                set rawData to raw data of artwork 1 of current track
-                set fp to open for access (POSIX file filePath) with write permission
-                set eof fp to 0
-                write rawData to fp
-                close access fp
-                return "OK"
-            else
-                return "NO_ART"
-            end if
-        end tell
-        '''
-        try:
-            res = subprocess.run(['osascript', '-e', applescript], capture_output=True, text=True, timeout=3.0)
-            if "OK" not in res.stdout:
-                self.raw_rgb565 = self._generate_default_rgb565()
-                return
-
-            # Use sips to resize to square JPEG
-            subprocess.run([
-                'sips', '-z', str(self.art_size), str(self.art_size),
-                raw_art_path, '--out', jpg_art_path
-            ], capture_output=True, timeout=3.0)
-
-            if os.path.exists(jpg_art_path):
-                with open(jpg_art_path, 'rb') as f:
-                    self.jpeg_data = f.read()
-
-            # Use sips to create 24-bit BMP
-            subprocess.run([
-                'sips', '-s', 'format', 'bmp',
-                '-z', str(self.art_size), str(self.art_size),
-                raw_art_path, '--out', bmp_art_path
-            ], capture_output=True, timeout=3.0)
-
-            if os.path.exists(bmp_art_path):
-                self.raw_rgb565 = self._bmp_to_rgb565(bmp_art_path)
-            else:
-                self.raw_rgb565 = self._generate_default_rgb565()
-
-        except Exception as e:
-            print(f"[Error extracting artwork] {e}", file=sys.stderr)
-            self.raw_rgb565 = self._generate_default_rgb565()
-
-    def _bmp_to_rgb565(self, bmp_path):
-        """Convert standard BMP into 16-bit big-endian RGB565 byte buffer."""
-        try:
-            with open(bmp_path, 'rb') as f:
-                data = f.read()
-
-            offset = struct.unpack('<I', data[10:14])[0]
-            width = struct.unpack('<i', data[18:22])[0]
-            height = struct.unpack('<i', data[22:26])[0]
-            bpp = struct.unpack('<H', data[28:30])[0]
-
-            is_bottom_up = height > 0
-            height = abs(height)
-            width = abs(width)
-
-            row_size = ((bpp * width + 31) // 32) * 4
-            bytes_per_pixel = bpp // 8
-
-            out = bytearray(width * height * 2)
-
-            for y in range(height):
-                bmp_y = (height - 1 - y) if is_bottom_up else y
-                row_offset = offset + bmp_y * row_size
-                for x in range(width):
-                    px_offset = row_offset + x * bytes_per_pixel
-                    b = data[px_offset]
-                    g = data[px_offset + 1]
-                    r = data[px_offset + 2]
-
-                    # 16-bit RGB565: R(5) G(6) B(5)
-                    val = ((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (b >> 3)
-                    idx = (y * width + x) * 2
-                    # Big-endian for ST7789 SPI
-                    out[idx] = (val >> 8) & 0xFF
-                    out[idx + 1] = val & 0xFF
-
-            return bytes(out)
-        except Exception as e:
-            print(f"[Error converting BMP to RGB565] {e}", file=sys.stderr)
-            return self._generate_default_rgb565()
-
-
-bridge = MusicBridge()
+    def _ws_poller(self):
+        """Poll metadata every 500ms and broadcast on change."""
+        while self.running:
+            try:
+                meta = self.controller.query()
+                # Check if significant fields changed
+                sig = (meta.get("state"), meta.get("title"), meta.get("artist"),
+                       meta.get("elapsed"), meta.get("artwork_id"))
+                if sig != self.last_broadcast_state:
+                    self.last_broadcast_state = sig
+                    self.broadcast_metadata(meta)
+            except Exception as e:
+                print(f"[WS Poller Error] {e}", file=sys.stderr)
+            time.sleep(0.5)
 
 
 INDEX_HTML = """<!DOCTYPE html>
@@ -489,494 +547,468 @@ INDEX_HTML = """<!DOCTYPE html>
   <meta charset="utf-8">
   <title>Cardputer Now Playing</title>
   <style>
-    @import url('https://cdn.jsdelivr.net/npm/@amansanoj/brand/globals.css');
-
     :root {
+      --font-body: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
       --background: #050505;
       --card: #0d0d0d;
       --border: #252525;
       --text: #e6e6e6;
       --primary: #afbdd9;
-      --secondary: #f0a133;
-      --accent: #df9a9e;
       --muted: #808080;
-      --radius: 8px;
+      --accent: #f0a133;
     }
-
-    * { box-sizing: border-box; margin: 0; padding: 0; }
-    html, body { height: 100%; }
-
     body {
-      font-family: var(--font-body);
       background: var(--background);
       color: var(--text);
-      min-height: 100vh;
+      font-family: var(--font-body);
+      margin: 0;
+      padding: 30px 20px;
       display: flex;
       flex-direction: column;
       align-items: center;
-      justify-content: center;
-      padding: 32px 20px;
-      -webkit-font-smoothing: antialiased;
     }
-
-    .card {
-      width: 100%;
+    .container {
       max-width: 440px;
+      width: 100%;
+    }
+    .header {
       display: flex;
-      gap: 18px;
+      justify-content: space-between;
       align-items: center;
-      border: 1px solid var(--border);
-      border-radius: var(--radius);
-      background: var(--card);
-      padding: 20px;
+      margin-bottom: 20px;
+      padding-bottom: 12px;
+      border-bottom: 1px solid var(--border);
     }
-
-    .art-wrapper {
-      position: relative;
-      width: 72px;
-      height: 72px;
-      flex-shrink: 0;
+    .title {
+      font-size: 1.1rem;
+      font-weight: 600;
+      color: var(--primary);
     }
-
-    .art {
-      width: 72px;
-      height: 72px;
+    .badge {
+      font-size: 0.75rem;
+      padding: 4px 8px;
       border-radius: 4px;
       background: #151515;
-      object-fit: cover;
+      color: var(--accent);
       border: 1px solid var(--border);
-      display: block;
     }
-
-    .pause-overlay {
-      position: absolute;
-      bottom: 3px;
-      right: 3px;
-      width: 16px;
-      height: 16px;
-      border-radius: 4px;
-      background: #270c0e;
-      border: 1px solid var(--accent);
-      display: none;
-      align-items: center;
-      justify-content: center;
-      gap: 2px;
-      box-shadow: 0 2px 4px rgba(0, 0, 0, 0.4);
-    }
-
-    .pause-overlay.visible {
+    .card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 16px;
       display: flex;
+      gap: 16px;
+      margin-bottom: 20px;
     }
-
-    .pause-overlay span {
-      width: 2px;
-      height: 8px;
-      background: var(--accent);
-      border-radius: 1px;
+    .art {
+      width: 80px;
+      height: 80px;
+      border-radius: 4px;
+      border: 1px solid var(--border);
+      background: #000;
+      object-fit: cover;
     }
-
     .info {
+      flex: 1;
       display: flex;
       flex-direction: column;
       justify-content: center;
       overflow: hidden;
-      min-width: 0;
-      gap: 3px;
     }
-
-    .title {
-      font-family: var(--font-display);
-      font-size: 1.05rem;
+    .song-title {
+      font-size: 0.95rem;
       font-weight: 600;
       color: var(--text);
       white-space: nowrap;
       overflow: hidden;
       text-overflow: ellipsis;
     }
-
     .artist {
-      font-size: 0.85rem;
+      font-size: 0.82rem;
       color: var(--muted);
-      white-space: nowrap;
-      overflow: hidden;
-      text-overflow: ellipsis;
-    }
-
-    .album {
-      font-size: 0.75rem;
-      color: var(--muted);
-      white-space: nowrap;
-      overflow: hidden;
-      text-overflow: ellipsis;
-    }
-
-    .time {
-      font-family: var(--font-mono);
-      font-size: 0.8rem;
-      color: var(--primary);
       margin-top: 4px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
     }
-
     .controls {
-      margin-top: 18px;
       display: flex;
-      gap: 8px;
       justify-content: center;
-      width: 100%;
-      max-width: 440px;
+      gap: 10px;
+      margin-bottom: 20px;
     }
-
-    .btn {
-      flex: 1;
-      text-align: center;
-      background: var(--card);
+    button {
+      background: #181818;
+      border: 1px solid var(--border);
       color: var(--text);
-      border: 1px solid var(--border);
-      padding: 9px 8px;
-      border-radius: var(--radius);
+      padding: 8px 16px;
+      border-radius: 6px;
+      font-size: 0.85rem;
       cursor: pointer;
-      font-family: var(--font-body);
-      font-size: 0.8rem;
-      font-weight: 500;
-      outline: none;
-      user-select: none;
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
-      gap: 6px;
-      transition: border-color 0.15s ease, background-color 0.15s ease, transform 0.05s ease;
     }
-    .btn:hover { border-color: var(--primary); background: #151515; }
-    .btn:active { transform: scale(0.96); }
-
-    .endpoints {
-      margin-top: 24px;
-      font-family: var(--font-mono);
-      font-size: 0.7rem;
-      color: var(--muted);
-      text-align: center;
-      line-height: 1.6;
-    }
-    .endpoints a { color: var(--primary); text-decoration: none; }
-    .endpoints a:hover { text-decoration: underline; }
-    .endpoints code {
-      font-family: var(--font-mono);
+    button:hover {
+      background: #252525;
       color: var(--primary);
-      background: #151515;
-      padding: 2px 6px;
-      border-radius: 4px;
-      border: 1px solid var(--border);
     }
   </style>
-  <script>
-    (function () {
-      var isDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
-      document.documentElement.classList.toggle('dark', isDark);
-    })();
-
-    var currentArtId = '__ARTWORK_ID__';
-    var ws = null;
-
-    function applyData(data) {
-      if (!data) return;
-      var isPlaying = (data.state === 'playing');
-      var titleEl = document.getElementById('track-title');
-      var artistEl = document.getElementById('track-artist');
-      var albumEl = document.getElementById('track-album');
-      var timeEl = document.getElementById('track-time');
-      var playBtn = document.getElementById('btn-play');
-      var artEl = document.getElementById('track-art');
-      var pauseOverlay = document.getElementById('pause-overlay');
-
-      if (titleEl) titleEl.textContent = data.title || (isPlaying ? 'Unknown Track' : 'Not Playing');
-      if (artistEl) artistEl.textContent = data.artist || '';
-      if (albumEl) albumEl.textContent = data.album || '';
-
-      var el = data.elapsed || 0;
-      var du = data.duration || 0;
-      var pad = function(n) { return (n < 10 ? '0' : '') + n; };
-      var timeStr = pad(Math.floor(el / 60)) + ':' + pad(el % 60) + ' / ' + pad(Math.floor(du / 60)) + ':' + pad(du % 60);
-      if (timeEl) timeEl.textContent = timeStr;
-
-      // Pause overlay badge on album art
-      if (pauseOverlay) {
-        if (data.state === 'paused') {
-          pauseOverlay.classList.add('visible');
-        } else {
-          pauseOverlay.classList.remove('visible');
-        }
-      }
-
-      if (playBtn) {
-        playBtn.textContent = isPlaying ? '❚❚ Pause' : '▶ Play';
-      }
-
-      // ONLY update artwork if artwork_id actually changes!
-      if (artEl && data.artwork_id && data.artwork_id !== currentArtId) {
-        currentArtId = data.artwork_id;
-        artEl.src = '/artwork.jpg?id=' + encodeURIComponent(currentArtId);
-      }
-    }
-
-    function connectWS() {
-      try {
-        var proto = (window.location.protocol === 'https:') ? 'wss:' : 'ws:';
-        ws = new WebSocket(proto + '//' + window.location.host + '/ws');
-        ws.onmessage = function(event) {
-          try {
-            var data = JSON.parse(event.data);
-            applyData(data);
-          } catch(e) {}
-        };
-        ws.onclose = function() {
-          ws = null;
-          setTimeout(connectWS, 2000);
-        };
-      } catch(e) {
-        ws = null;
-      }
-    }
-    connectWS();
-
-    function updateDashboard() {
-      if (ws && ws.readyState === WebSocket.OPEN) return;
-      fetch('/api/now-playing')
-        .then(function(res) { return res.json(); })
-        .then(applyData)
-        .catch(function(err) {});
-    }
-
-    // Fallback polling when WS is offline
-    setInterval(updateDashboard, 3000);
-
-    function sendControl(url) {
-      var action = url.split('/').pop();
-      if (ws && ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({ action: action }));
-      } else {
-        fetch(url)
-          .then(function() {
-            setTimeout(updateDashboard, 150);
-          })
-          .catch(function(err) {
-            console.error('Control error:', err);
-          });
-      }
-    }
-  </script>
 </head>
 <body>
-  <div class="card">
-    <div class="art-wrapper">
-      <img id="track-art" class="art" src="/artwork.jpg?id=__ARTWORK_ID__" onerror="this.src='data:image/svg+xml;utf8,<svg xmlns=\\'http://www.w3.org/2000/svg\\' width=\\'72\\' height=\\'72\\' viewBox=\\'0 0 72 72\\'><rect width=\\'72\\' height=\\'72\\' fill=\\'%23000\\'/><text x=\\'36\\' y=\\'41\\' font-size=\\'11\\' fill=\\'%23fff\\' text-anchor=\\'middle\\'>NO ART</text></svg>'">
-      <div id="pause-overlay" class="pause-overlay __PAUSE_CLASS__">
-        <span></span>
-        <span></span>
+  <div class="container">
+    <div class="header">
+      <div class="title">Cardputer Now Playing</div>
+      <div class="badge" id="player-badge">Active</div>
+    </div>
+    <div class="card">
+      <img id="art-img" class="art" src="/artwork.jpg" alt="Art">
+      <div class="info">
+        <div class="song-title" id="track-title">Loading...</div>
+        <div class="artist" id="track-artist">Connecting to bridge...</div>
       </div>
     </div>
-    <div class="info">
-      <div id="track-title" class="title">__TITLE__</div>
-      <div id="track-artist" class="artist">__ARTIST__</div>
-      <div id="track-album" class="album">__ALBUM__</div>
-      <div id="track-time" class="time">__TIME__</div>
+    <div class="controls">
+      <button onclick="control('previous')">&#9664;&#9664; Prev</button>
+      <button onclick="control('backward')">-10s</button>
+      <button onclick="control('toggle')">&#9654;&#10074;&#10074; Toggle</button>
+      <button onclick="control('forward')">+10s</button>
+      <button onclick="control('next')">Next &#9654;&#9654;</button>
     </div>
   </div>
-  <div class="controls">
-    <button class="btn" type="button" onclick="sendControl('/api/previous')">|◀ Prev</button>
-    <button class="btn" type="button" onclick="sendControl('/api/backward')">◀◀ -10s</button>
-    <button id="btn-play" class="btn" type="button" onclick="sendControl('/api/toggle')">__PLAY_PAUSE_BTN__</button>
-    <button class="btn" type="button" onclick="sendControl('/api/forward')">▶▶ +10s</button>
-    <button class="btn" type="button" onclick="sendControl('/api/next')">▶| Next</button>
-  </div>
-  <div class="endpoints">
-    Endpoints:
-    <a href="/api/now-playing" target="_blank">/api/now-playing</a> |
-    <a href="/artwork.raw" target="_blank">/artwork.raw (72x72 RGB565)</a> |
-    <a href="/artwork.jpg" target="_blank">/artwork.jpg</a> |
-    <a href="/ws" target="_blank">/ws (WebSocket)</a>
-  </div>
+  <script>
+    function updateUI(data) {
+      document.getElementById('track-title').textContent = data.title || (data.running ? "Not Playing" : "Player Closed");
+      document.getElementById('track-artist').textContent = data.artist || (data.player || "Music");
+      document.getElementById('player-badge').textContent = (data.player || "Music") + " (" + (data.state || "stopped") + ")";
+      if (data.artwork_id && data.artwork_id !== "none") {
+        document.getElementById('art-img').src = "/artwork.jpg?t=" + data.artwork_id;
+      }
+    }
+
+    function control(action) {
+      fetch('/api/' + action, { method: 'POST' }).then(() => poll());
+    }
+
+    function poll() {
+      fetch('/api/now-playing')
+        .then(r => r.json())
+        .then(updateUI)
+        .catch(console.error);
+    }
+
+    setInterval(poll, 1500);
+    poll();
+  </script>
 </body>
 </html>
 """
 
 
-class RequestHandler(http.server.BaseHTTPRequestHandler):
-    def log_message(self, format, *args):
-        # Concise logging
-        sys.stdout.write(f"[{time.strftime('%H:%M:%S')}] {self.command} {self.path} - {args[1]}\n")
+def create_request_handler(bridge_instance: CompanionBridge):
+    class RequestHandler(http.server.BaseHTTPRequestHandler):
+        def log_message(self, format, *args):
+            pass  # Suppress HTTP access noise
 
-    def end_headers(self):
-        self.send_header('Access-Control-Allow-Origin', '*')
-        self.send_header('Cache-Control', 'no-cache, no-store, must-revalidate')
-        super().end_headers()
+        def do_GET(self):
+            parsed_path = self.path.split('?')[0]
 
-    def do_GET(self):
-        path = self.path.split('?')[0]
+            if parsed_path == "/ws":
+                upgrade = self.headers.get("Upgrade", "").lower()
+                if upgrade == "websocket":
+                    key = self.headers.get("Sec-WebSocket-Key", "")
+                    guid = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
+                    accept = base64.b64encode(hashlib.sha1((key + guid).encode('utf-8')).digest()).decode('utf-8')
 
-        if path == '/ws' and 'websocket' in self.headers.get('Upgrade', '').lower():
-            key = self.headers.get('Sec-WebSocket-Key')
-            if not key:
-                self.send_error(400, "Missing Sec-WebSocket-Key")
-                return
-            accept_str = key.strip() + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
-            accept_hash = hashlib.sha1(accept_str.encode('utf-8')).digest()
-            accept_key = base64.b64encode(accept_hash).decode('utf-8')
+                    self.send_response(101)
+                    self.send_header("Upgrade", "websocket")
+                    self.send_header("Connection", "Upgrade")
+                    self.send_header("Sec-WebSocket-Accept", accept)
+                    self.end_headers()
 
-            self.send_response(101, "Switching Protocols")
-            self.send_header("Upgrade", "websocket")
-            self.send_header("Connection", "Upgrade")
-            self.send_header("Sec-WebSocket-Accept", accept_key)
-            self.end_headers()
+                    client_sock = self.connection
+                    bridge_instance.add_ws_client(client_sock)
 
-            bridge.handle_ws_client(self.request)
-            return
+                    while True:
+                        opcode, payload = read_ws_frame(client_sock)
+                        if opcode == 0x8 or not client_sock:
+                            break
+                        elif opcode == 0x9:  # Ping
+                            pong = make_ws_frame(payload, opcode=0xA)
+                            try: client_sock.sendall(pong)
+                            except Exception: break
+                        elif opcode == 0x1:  # Text Frame (Control commands from Cardputer)
+                            try:
+                                text_msg = payload.decode('utf-8', errors='ignore').strip()
+                                action = None
+                                if text_msg.startswith("{"):
+                                    try:
+                                        msg_data = json.loads(text_msg)
+                                        action = msg_data.get("action")
+                                    except Exception:
+                                        pass
+                                else:
+                                    action = text_msg
 
-        elif path == '/api/now-playing':
-            meta = bridge.query_music()
-            body = json.dumps(meta, indent=2).encode('utf-8')
-            self.send_response(200)
-            self.send_header('Content-Type', 'application/json; charset=utf-8')
-            self.send_header('Content-Length', str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
+                                if action:
+                                    print(f"[WS Control] Received action: {action}")
+                                    bridge_instance.controller.execute_command(action)
+                                    # Immediate broadcast of updated state
+                                    new_meta = bridge_instance.controller.query()
+                                    bridge_instance.broadcast_metadata(new_meta)
+                            except Exception as e:
+                                print(f"[WS Control Error] {e}", file=sys.stderr)
 
-        elif path in ('/artwork.raw', '/artwork.rgb565'):
-            bridge.query_music()
-            raw = bridge.raw_rgb565
-            self.send_response(200)
-            self.send_header('Content-Type', 'application/octet-stream')
-            self.send_header('Content-Length', str(len(raw)))
-            self.end_headers()
-            self.wfile.write(raw)
+                    bridge_instance.remove_ws_client(client_sock)
+                    return
 
-        elif path == '/artwork.jpg':
-            bridge.query_music()
-            jpg = bridge.jpeg_data
-            if not jpg:
+            if parsed_path in ["/api/now-playing", "/api/metadata"]:
+                meta = bridge_instance.controller.query()
+                data = json.dumps(meta).encode('utf-8')
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Access-Control-Allow-Origin", "*")
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+
+            elif parsed_path in ["/artwork.raw", "/artwork.rgb565"]:
+                raw = bridge_instance.controller.cached_rgb565
+                self.send_response(200)
+                self.send_header("Content-Type", "application/octet-stream")
+                self.send_header("Access-Control-Allow-Origin", "*")
+                self.send_header("Content-Length", str(len(raw)))
+                self.end_headers()
+                self.wfile.write(raw)
+
+            elif parsed_path == "/artwork.jpg":
+                jpg = bridge_instance.controller.cached_jpeg
+                if not jpg:
+                    # Serve placeholder image
+                    jpg = b""
+                self.send_response(200)
+                self.send_header("Content-Type", "image/jpeg")
+                self.send_header("Access-Control-Allow-Origin", "*")
+                self.send_header("Content-Length", str(len(jpg)))
+                self.end_headers()
+                self.wfile.write(jpg)
+
+            elif parsed_path == "/health":
+                res = b'{"status":"ok"}'
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(res)))
+                self.end_headers()
+                self.wfile.write(res)
+
+            elif parsed_path == "/":
+                data = INDEX_HTML.encode('utf-8')
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+
+            elif parsed_path.startswith("/api/"):
+                # Disallow mutating actions over GET
+                self.send_response(405)
+                self.send_header("Content-Type", "text/plain")
+                self.end_headers()
+                self.wfile.write(b"405 Method Not Allowed - Use POST")
+
+            else:
                 self.send_response(404)
                 self.end_headers()
-                return
-            self.send_response(200)
-            self.send_header('Content-Type', 'image/jpeg')
-            self.send_header('Content-Length', str(len(jpg)))
-            self.end_headers()
-            self.wfile.write(jpg)
 
-        elif path == '/health':
-            self.send_response(200)
-            self.send_header('Content-Type', 'text/plain')
-            self.end_headers()
-            self.wfile.write(b"OK")
+        def do_POST(self):
+            parsed_path = self.path.split('?')[0]
+            action = parsed_path.replace("/api/", "").strip("/")
+            if bridge_instance.controller.execute_command(action):
+                resp = json.dumps({"status": "ok", "action": action}).encode('utf-8')
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Access-Control-Allow-Origin", "*")
+                self.send_header("Content-Length", str(len(resp)))
+                self.end_headers()
+                self.wfile.write(resp)
+            else:
+                resp = json.dumps({"status": "error", "message": f"Unknown action: {action}"}).encode('utf-8')
+                self.send_response(400)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(resp)
 
-        elif path in ('/api/toggle', '/api/playpause', '/api/play', '/api/pause', '/api/next', '/api/previous',
-                      '/api/forward', '/api/backward', '/api/seek_forward', '/api/seek_backward'):
-            action = path.split('/')[-1]
-            success, msg = bridge.control_playback(action)
-            res = {"success": success, "message": msg, "action": action}
-            body = json.dumps(res).encode('utf-8')
-            self.send_response(200 if success else 500)
-            self.send_header('Content-Type', 'application/json; charset=utf-8')
-            self.send_header('Content-Length', str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
-
-        elif path == '/':
-            meta = bridge.query_music()
-            state = meta.get('state', 'stopped')
-            title = meta.get('title') or ('Not Playing' if state == 'stopped' else 'Unknown Track')
-            artist = meta.get('artist') or ''
-            album = meta.get('album') or ''
-            elapsed = meta.get('elapsed', 0)
-            duration = meta.get('duration', 0)
-            time_str = f"{elapsed // 60:02d}:{elapsed % 60:02d} / {duration // 60:02d}:{duration % 60:02d}"
-            play_btn_text = "❚❚ Pause" if state == 'playing' else "▶ Play"
-
-            pause_class = "visible" if state == 'paused' else ""
-
-            html = INDEX_HTML.replace('__ARTWORK_ID__', meta.get('artwork_id', 'none')) \
-                             .replace('__TITLE__', title) \
-                             .replace('__ARTIST__', artist) \
-                             .replace('__ALBUM__', album) \
-                             .replace('__TIME__', time_str) \
-                             .replace('__PLAY_PAUSE_BTN__', play_btn_text) \
-                             .replace('__PAUSE_CLASS__', pause_class)
-
-            body = html.encode('utf-8')
-            self.send_response(200)
-            self.send_header('Content-Type', 'text/html; charset=utf-8')
-            self.send_header('Content-Length', str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
-
-        else:
-            self.send_response(404)
-            self.end_headers()
-
-    def do_POST(self):
-        path = self.path.split('?')[0]
-        if path in ('/api/toggle', '/api/playpause', '/api/play', '/api/pause', '/api/next', '/api/previous',
-                    '/api/forward', '/api/backward', '/api/seek_forward', '/api/seek_backward'):
-            action = path.split('/')[-1]
-            success, msg = bridge.control_playback(action)
-            res = {"success": success, "message": msg, "action": action}
-            body = json.dumps(res).encode('utf-8')
-            self.send_response(200 if success else 500)
-            self.send_header('Content-Type', 'application/json; charset=utf-8')
-            self.send_header('Content-Length', str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
-        else:
-            self.send_response(404)
-            self.end_headers()
+    return RequestHandler
 
 
-class ThreadingTCPServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
-    daemon_threads = True
+class ThreadedTCPServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
     allow_reuse_address = True
+    daemon_threads = True
 
 
-def get_local_ip():
-    import socket
-    try:
-        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        s.connect(("8.8.8.8", 80))
-        ip = s.getsockname()[0]
-        s.close()
-        return ip
-    except Exception:
-        return "127.0.0.1"
+# =============================================================================
+# BLE Companion Task (Bleak Asyncio Worker)
+# =============================================================================
+
+class BleCompanionTask:
+    def __init__(self, controller: MusicController):
+        self.controller = controller
+        self.client: Optional[BleakClient] = None
+        self.last_sent_meta = {}
+
+    async def run(self):
+        if not HAS_BLEAK:
+            return
+
+        print(f"[BLE] Scanning for '{BLE_DEVICE_NAME}'...")
+        while True:
+            try:
+                device = await BleakScanner.find_device_by_filter(
+                    lambda d, ad: d.name and BLE_DEVICE_NAME.lower() in d.name.lower(),
+                    timeout=4.0
+                )
+
+                if not device:
+                    await asyncio.sleep(2.0)
+                    continue
+
+                print(f"[BLE] Found Cardputer! ({device.address}). Connecting...")
+                async with BleakClient(device) as client:
+                    self.client = client
+                    print("[BLE] Connected successfully to Cardputer-NowPlaying!")
+
+                    # Subscribe to Cardputer keyboard controls
+                    await client.start_notify(BLE_CHAR_CONTROL_UUID, self._on_control_received)
+
+                    while client.is_connected:
+                        meta = self.controller.query()
+                        if meta != self.last_sent_meta:
+                            payload = json.dumps(meta).encode('utf-8')
+                            try:
+                                await client.write_gatt_char(BLE_CHAR_METADATA_UUID, payload, response=False)
+                                self.last_sent_meta = meta
+                            except Exception as e:
+                                print(f"[BLE] Send metadata error: {e}")
+                                break
+                        await asyncio.sleep(0.3)
+
+            except Exception as e:
+                print(f"[BLE] Connection lost or waiting: {e}")
+                await asyncio.sleep(3.0)
+
+    def _on_control_received(self, sender, data: bytearray):
+        msg = data.decode('utf-8', errors='ignore').strip()
+        if not msg:
+            return
+
+        if msg.startswith("GET_ART:"):
+            art_id = msg.split(":", 1)[1]
+            print(f"[BLE] Cardputer requested artwork ({art_id}). Streaming...")
+            asyncio.create_task(self._stream_artwork())
+        else:
+            self.controller.execute_command(msg)
+
+    async def _stream_artwork(self):
+        if not self.client or not self.controller.cached_rgb565:
+            return
+
+        data = self.controller.cached_rgb565
+        total_len = len(data)
+
+        # Detect negotiated MTU from BleakClient (macOS CoreBluetooth)
+        mtu = getattr(self.client, "mtu_size", 512)
+        # Ensure packet fits safely inside MTU: 6 bytes header + 3 bytes ATT overhead
+        safe_chunk_size = max(64, min(480, mtu - 9))
+
+        # Split data into chunks of safe_chunk_size
+        chunks = []
+        offset = 0
+        while offset < total_len:
+            chunks.append((offset, data[offset:offset + safe_chunk_size]))
+            offset += safe_chunk_size
+
+        total_chunks = len(chunks)
+
+        for idx, (chunk_offset, chunk_bytes) in enumerate(chunks):
+            # 6-byte header: [chunkIdx (2B), totalChunks (2B), targetOffset (2B)]
+            header = bytearray([
+                (idx >> 8) & 0xFF, idx & 0xFF,
+                (total_chunks >> 8) & 0xFF, total_chunks & 0xFF,
+                (chunk_offset >> 8) & 0xFF, chunk_offset & 0xFF
+            ])
+            packet = header + chunk_bytes
+            try:
+                await self.client.write_gatt_char(BLE_CHAR_ARTWORK_UUID, packet, response=True)
+            except Exception as e:
+                print(f"[BLE] Artwork stream error on chunk {idx} (offset {chunk_offset}): {e}")
+                return
+
+        print(f"[BLE] Artwork stream complete ({total_len} bytes in {total_chunks} chunks, chunk_size={safe_chunk_size}).")
 
 
-def main():
-    parser = argparse.ArgumentParser(description="Apple Music ESP32 Companion Bridge")
-    parser.add_argument("--port", type=int, default=58329, help="HTTP server port (default: 58329)")
-    parser.add_argument("--host", type=str, default="0.0.0.0", help="Listen host (default: 0.0.0.0)")
-    args = parser.parse_args()
+# =============================================================================
+# CLI Entry Point
+# =============================================================================
 
-    local_ip = get_local_ip()
+def main(args_list=None):
+    parser = argparse.ArgumentParser(description="Cardputer Now Playing - macOS Companion Bridge")
+    parser.add_argument("--transport", choices=["auto", "wifi", "ble", "both"], default="auto",
+                        help="Transport mode (auto: runs both if bleak available, else Wi-Fi)")
+    parser.add_argument("--host", default="0.0.0.0", help="HTTP host (default: 0.0.0.0)")
+    parser.add_argument("--port", type=int, default=DEFAULT_PORT, help="HTTP port (default: 58329)")
+    args = parser.parse_args(args_list)
 
-    print("=" * 60)
-    print(" Cardputer Now Playing - ESP32 / Wokwi Companion Bridge")
-    print("=" * 60)
-    print(f" * Listening on        : http://{args.host}:{args.port}")
-    print(f" * Mac Local IP        : http://{local_ip}:{args.port}")
-    print(f" * For Wokwi Simulator : http://host.wokwi.internal:{args.port}")
-    print(f" * Metadata Endpoint   : http://host.wokwi.internal:{args.port}/api/now-playing")
-    print(f" * WebSocket Endpoint  : ws://host.wokwi.internal:{args.port}/ws")
-    print(f" * Artwork RGB565      : http://host.wokwi.internal:{args.port}/artwork.raw (72x72 px)")
-    print("=" * 60)
+    controller = MusicController(art_size=ARTWORK_SIZE)
+    bridge = CompanionBridge(controller)
 
-    print(" Press Ctrl+C to stop.\n")
+    start_wifi = args.transport in ["auto", "wifi", "both"]
+    start_ble = args.transport in ["auto", "ble", "both"]
 
-    # Start background poller daemon for instant WebSocket push notifications
-    bridge.start_poller()
+    print("==================================================")
+    print(" Cardputer Now Playing - macOS Companion Bridge")
+    print("==================================================")
+    print(f" * Media Player:   Apple Music + Spotify")
+    print(f" * Image Pipeline: {'Pillow (In-Memory)' if HAS_PIL else 'macOS sips (Disk Fallback)'}")
 
-    with ThreadingTCPServer((args.host, args.port), RequestHandler) as httpd:
+    server = None
+    if start_wifi:
+        handler = create_request_handler(bridge)
         try:
-            httpd.serve_forever()
+            server = ThreadedTCPServer((args.host, args.port), handler)
+            print(f" * HTTP/WS Bridge: http://{args.host}:{args.port}")
+            print(f" * Wokwi Endpoint: http://host.wokwi.internal:{args.port}")
+        except Exception as e:
+            print(f"[Error] Failed to bind HTTP server to {args.host}:{args.port}: {e}")
+            if not start_ble:
+                sys.exit(1)
+
+    if start_ble:
+        if HAS_BLEAK:
+            print(f" * BLE Wireless:   Enabled (Device: '{BLE_DEVICE_NAME}')")
+        else:
+            print(f" * BLE Wireless:   Disabled ('bleak' library not installed)")
+            print("   Tip: Run with: uv run --with bleak python3 host-companion/bridge.py")
+            if args.transport == "ble":
+                sys.exit(1)
+            start_ble = False
+
+    print("==================================================\n")
+
+    if server:
+        server_thread = threading.Thread(target=server.serve_forever, daemon=True)
+        server_thread.start()
+
+    if start_ble and HAS_BLEAK:
+        ble_task = BleCompanionTask(controller)
+        try:
+            asyncio.run(ble_task.run())
         except KeyboardInterrupt:
-            print("\nShutting down bridge service...")
+            print("\n[Bridge] Shutting down...")
+    elif server:
+        try:
+            while True:
+                time.sleep(1)
+        except KeyboardInterrupt:
+            print("\n[Bridge] Shutting down...")
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()

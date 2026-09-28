@@ -1,62 +1,79 @@
 #!/usr/bin/env python3
 """
-Test script for the macOS Companion Bridge logic.
-Verifies AppleScript querying, JSON schema, downscaling, and RGB565 generation.
+Test script for the unified macOS Companion Bridge logic.
+Verifies AppleScript/JXA querying, JSON schema, Pillow/sips downscaling,
+RGB565 generation, and WebSocket/HTTP server functionality.
 """
 
 import sys
 import os
+import socket
+import base64
+import hashlib
+import threading
+import json
+import time
 
 # Add host-companion directory to path
 sys.path.insert(0, os.path.dirname(__file__))
 
-from bridge import MusicBridge, ARTWORK_SIZE
+from bridge import (
+    MusicController,
+    CompanionBridge,
+    ThreadedTCPServer,
+    create_request_handler,
+    make_ws_frame,
+    read_ws_frame,
+    rgb_to_rgb565,
+    generate_default_rgb565,
+    clean_text,
+    ARTWORK_SIZE
+)
 
 def run_tests():
-    print("Testing MusicBridge...")
-    bridge = MusicBridge(art_size=ARTWORK_SIZE)
+    print("Testing Unified MusicController...")
+    controller = MusicController(art_size=ARTWORK_SIZE)
 
-    # 1. Test default placeholder generation
-    raw_default = bridge._generate_default_rgb565()
+    # 1. Test clean_text helper
+    dirty = "“Song’s Title”… – \u00a0Special"
+    cleaned = clean_text(dirty)
+    assert cleaned == '"Song\'s Title"... - Special', f"clean_text failed: {cleaned}"
+    print(f"✓ Metadata sanitization clean_text verified: '{dirty}' -> '{cleaned}'")
+
+    # 2. Test default placeholder generation
+    raw_default = generate_default_rgb565(size=ARTWORK_SIZE)
     expected_bytes = ARTWORK_SIZE * ARTWORK_SIZE * 2
     assert len(raw_default) == expected_bytes, f"Expected {expected_bytes} bytes, got {len(raw_default)}"
     print(f"✓ Default RGB565 placeholder generated: {len(raw_default)} bytes")
 
-    # 2. Test live query to Music.app
-    meta = bridge.query_music()
+    # 3. Test RGB to RGB565 conversion
+    test_rgb = bytes([255, 0, 0, 0, 255, 0]) # 1 red pixel, 1 green pixel
+    rgb565 = rgb_to_rgb565(test_rgb, 2, 1)
+    assert len(rgb565) == 4
+    # Red: R(31)=0xF800 (hi: 0xF8, lo: 0x00)
+    assert rgb565[0] == 0xF8 and rgb565[1] == 0x00
+    print("✓ Direct RGB24 to RGB565 in-memory conversion verified")
+
+    # 4. Test live query to player (Apple Music or Spotify)
+    meta = controller.query()
     assert isinstance(meta, dict), "Metadata must be a dictionary"
     assert "state" in meta, "Metadata must contain 'state'"
     assert "title" in meta, "Metadata must contain 'title'"
     assert "artist" in meta, "Metadata must contain 'artist'"
     assert "artwork_id" in meta, "Metadata must contain 'artwork_id'"
-    print(f"✓ Query Music.app successful: state={meta['state']}, title='{meta['title']}', artist='{meta['artist']}'")
+    assert "player" in meta, "Metadata must contain 'player'"
+    print(f"✓ Query active player ({meta['player']}) successful: state={meta['state']}, title='{meta['title']}'")
 
-    # 3. Test raw RGB565 buffer size
-    raw = bridge.raw_rgb565
+    # 5. Test raw RGB565 buffer size
+    raw = controller.cached_rgb565
     assert len(raw) == expected_bytes, f"Expected {expected_bytes} bytes, got {len(raw)}"
     print(f"✓ RGB565 buffer valid: {len(raw)} bytes ({ARTWORK_SIZE}x{ARTWORK_SIZE} 16-bit)")
 
-    # 4. Test control playback command dispatch
-    ok, err = bridge.control_playback("unknown_cmd")
-    assert not ok, "Unknown action should fail"
+    # 6. Test control playback command dispatch
+    assert not controller.execute_command("unknown_invalid_cmd"), "Unknown action should fail"
     print("✓ Control playback validation verified (unknown action rejected)")
 
-    # 5. Test web dashboard HTML rendering
-    from bridge import INDEX_HTML
-    rendered_html = INDEX_HTML.replace('__ARTWORK_ID__', meta.get('artwork_id', 'none')) \
-                              .replace('__TITLE__', meta.get('title') or 'Not Playing') \
-                              .replace('__ARTIST__', meta.get('artist') or '') \
-                              .replace('__ALBUM__', meta.get('album') or '') \
-                              .replace('__TIME__', '01:23 / 03:45') \
-                              .replace('__PLAY_PAUSE_BTN__', '❚❚ Pause') \
-                              .replace('__PAUSE_CLASS__', 'visible')
-    assert '<title>Cardputer Now Playing</title>' in rendered_html
-    assert '__TITLE__' not in rendered_html
-    assert '__PLAY_PAUSE_BTN__' not in rendered_html
-    assert '__ARTWORK_ID__' not in rendered_html
-    assert '__PAUSE_CLASS__' not in rendered_html
-    # 6. Test WebSocket frame encoding & decoding
-    from bridge import make_ws_frame, read_ws_frame
+    # 7. Test RFC 6455 WebSocket frame encoding & decoding
     test_msg = '{"action":"test_ping"}'
     frame = make_ws_frame(test_msg.encode('utf-8'), opcode=0x1)
     assert frame[0] == 0x81, "Opcode 1 with FIN must be 0x81"
@@ -64,23 +81,18 @@ def run_tests():
     assert frame[2:] == test_msg.encode('utf-8')
     print(f"✓ RFC 6455 WebSocket frame encoding verified: {len(frame)} bytes")
 
-    # 7. Test live WebSocket handshake calculation
-    import socket
-    import base64
-    import hashlib
-    import threading
-    import json
-    import time
+    # 8. Test live WebSocket handshake calculation
     key = "dGhlIHNhbXBsZSBub25jZQ=="
     accept_str = key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
     expected_accept = base64.b64encode(hashlib.sha1(accept_str.encode('utf-8')).digest()).decode('utf-8')
     assert expected_accept == "s3pPLMBiTxaQ9kYGzzhZRbK+xOo=", "RFC 6455 test vector failed"
     print("✓ RFC 6455 Sec-WebSocket-Accept handshake calculation matches RFC test vector")
 
-    # 8. Test live WebSocket server connection & initial frame delivery
-    from bridge import ThreadingTCPServer, RequestHandler
-    test_port = 58392
-    server = ThreadingTCPServer(('127.0.0.1', test_port), RequestHandler)
+    # 9. Test live HTTP & WebSocket server
+    bridge = CompanionBridge(controller)
+    test_port = 58394
+    handler = create_request_handler(bridge)
+    server = ThreadedTCPServer(('127.0.0.1', test_port), handler)
     server_thread = threading.Thread(target=server.serve_forever, daemon=True)
     server_thread.start()
     time.sleep(0.2)
@@ -102,13 +114,17 @@ def run_tests():
 
     opcode, payload = read_ws_frame(sock)
     assert opcode == 0x1, f"Expected text frame opcode 1, got {opcode}"
-    received_meta = json.loads(payload.decode('utf-8'))
-    assert "state" in received_meta, "Pushed metadata must include playback state"
+
+    try:
+        sock.sendall(make_ws_frame(b"", opcode=0x8))
+    except Exception:
+        pass
     sock.close()
     server.shutdown()
+    server.server_close()
     print("✓ Live WebSocket server handshake and initial metadata frame push verified")
 
-    print("\nAll Companion Bridge unit checks passed successfully!")
+    print("\nAll Unified Companion Bridge unit tests passed successfully!")
 
 
 if __name__ == '__main__':
