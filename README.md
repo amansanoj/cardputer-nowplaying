@@ -1,5 +1,5 @@
 # Cardputer Now Playing
-A minimalist, zero-flicker wireless display for Apple Music on macOS built for the **M5Stack Cardputer**, **Cardputer-Adv**, and **ESP32-S3**.
+A minimalist, zero-flicker wireless display for Apple Music on macOS built exclusively for the **M5Stack Cardputer-Adv** (ESP32-S3).
 
 ![Demo](demo.gif)
 
@@ -112,13 +112,17 @@ When running on the Cardputer / Cardputer-Adv, you have full playback and device
 To build and customize the project locally, ensure you have PlatformIO and Python 3 installed.
 
 ```sh
-# 1. Start the host companion bridge
+# 1. Start the unified host companion bridge
+# With BLE wireless + Wi-Fi WebSocket push:
+uv run --with bleak python3 host-companion/bridge.py
+
+# Or standalone with zero dependencies (Wi-Fi + Wokwi simulator mode):
 python3 host-companion/bridge.py
 
 # 2. Build firmware for the Wokwi simulator
 cd firmware && pio run -e esp32s3
 
-# 3. Or build firmware for Cardputer-Adv
+# 3. Or build firmware for physical Cardputer-Adv
 cd firmware && pio run -e cardputer-adv
 ```
 
