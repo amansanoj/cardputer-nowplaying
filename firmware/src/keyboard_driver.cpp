@@ -6,8 +6,8 @@
 #define REG_INT_STAT        0x02
 #define REG_KEY_LCK_EC      0x03
 #define REG_KEY_EVENT_A     0x04
-#define REG_KP_GPIO1        0x1D // ROW0..ROW6 (0x7F)
-#define REG_KP_GPIO2        0x1E // COL0..COL7 (0xFF)
+#define REG_KP_GPIO1        0x1D
+#define REG_KP_GPIO2        0x1E
 
 // Cardputer physical layout mapped to 4 rows x 14 columns
 static const char keyMapNormal[4][14] = {
@@ -24,13 +24,27 @@ static const char keyMapShift[4][14] = {
   {  0 ,   0 ,  0 , 'Z', 'X', 'C', 'V', 'B', 'N', 'M', '<', '>', '?', ' ' }
 };
 
+static const char keyMapFn[4][14] = {
+  { 0x1B, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x7F },
+  { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+  { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, ';', '\'', '\n' },
+  { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, ',', '.', '/', ' ' }
+};
+
 static bool shiftActive = false;
+static bool fnActive    = false;
 static bool isTcaPresent = false;
 static bool isIoMatrixPresent = false;
 
-// Fallback IO Matrix pins for standard Cardputer (non-Adv)
+// Standard Cardputer 74HC138 matrix pins
 static const int ioOutputPins[3] = {8, 9, 11};
 static const int ioInputPins[7]  = {13, 15, 3, 4, 5, 6, 7};
+static const uint8_t X_map_chart[7][2] = {
+  {0, 1}, {2, 3}, {4, 5}, {6, 7}, {8, 9}, {10, 11}, {12, 13}
+};
+
+// Previous state bitmask for 4 rows x 14 cols (56 keys)
+static uint64_t prevKeyMatrix = 0;
 
 static uint8_t tcaReadReg(uint8_t reg) {
   Wire.beginTransmission(TCA8418_I2C_ADDR);
@@ -47,6 +61,18 @@ static void tcaWriteReg(uint8_t reg, uint8_t val) {
   Wire.endTransmission();
 }
 
+static bool probeTcaOnPins(int sda, int scl) {
+  Wire.begin(sda, scl, 100000);
+  Wire.setTimeOut(15); // Strict 15ms timeout prevents hang on unpulled lines
+  Wire.beginTransmission(TCA8418_I2C_ADDR);
+  uint8_t err = Wire.endTransmission();
+  if (err == 0) {
+    return true;
+  }
+  Wire.end();
+  return false;
+}
+
 KeyboardDriver::KeyboardDriver() : hardwarePresent(false) {}
 
 bool KeyboardDriver::begin() {
@@ -55,23 +81,28 @@ bool KeyboardDriver::begin() {
   Serial.println("[Keyboard] Wokwi Simulator active. Serial keyboard ready.");
   return false;
 #else
-  // 1. First probe Cardputer-Adv TCA8418 I2C keyboard on SDA=2, SCL=1
-  Wire.begin(2, 1, 400000);
-  Wire.beginTransmission(TCA8418_I2C_ADDR);
-  if (Wire.endTransmission() == 0) {
-    // Configure 7 rows and 8 columns for keypad scanning
-    tcaWriteReg(REG_KP_GPIO1, 0x7F);
-    tcaWriteReg(REG_KP_GPIO2, 0xFF);
-    tcaWriteReg(REG_CFG, 0x01);      // Enable keypad events & auto-increment
-    tcaWriteReg(REG_INT_STAT, 0x01); // Clear interrupts
-
+  // 1. Probe TCA8418 on SDA=8, SCL=9 (Cardputer-Adv internal)
+  if (probeTcaOnPins(8, 9)) {
     isTcaPresent = true;
     hardwarePresent = true;
-    Serial.println("[Keyboard] TCA8418 hardware keyboard detected on Cardputer-Adv!");
+    Serial.println("[Keyboard] TCA8418 detected on pins (8, 9)!");
+  }
+  // 2. Probe TCA8418 on SDA=2, SCL=1 (Cardputer Grove / alternate)
+  else if (probeTcaOnPins(2, 1)) {
+    isTcaPresent = true;
+    hardwarePresent = true;
+    Serial.println("[Keyboard] TCA8418 detected on pins (2, 1)!");
+  }
+
+  if (isTcaPresent) {
+    tcaWriteReg(REG_KP_GPIO1, 0x7F);
+    tcaWriteReg(REG_KP_GPIO2, 0xFF);
+    tcaWriteReg(REG_CFG, 0x01);
+    tcaWriteReg(REG_INT_STAT, 0x01);
     return true;
   }
 
-  // 2. If TCA8418 not detected, probe standard Cardputer IO Matrix (74HC138)
+  // 3. Fallback to standard Cardputer 74HC138 matrix
   for (int pin : ioOutputPins) {
     pinMode(pin, OUTPUT);
     digitalWrite(pin, LOW);
@@ -81,19 +112,19 @@ bool KeyboardDriver::begin() {
   }
   isIoMatrixPresent = true;
   hardwarePresent = true;
-  Serial.println("[Keyboard] Standard Cardputer 74HC138 matrix keyboard initialized!");
+  Serial.println("[Keyboard] Standard Cardputer 74HC138 IO matrix initialized!");
   return true;
 #endif
 }
 
 char KeyboardDriver::getKey() {
 #if !defined(TARGET_WOKWI_SIMULATOR)
-  // 1. Scan TCA8418 on Cardputer-Adv
+  // 1. TCA8418 scan (Cardputer-Adv)
   if (isTcaPresent) {
     uint8_t count = tcaReadReg(REG_KEY_LCK_EC) & 0x0F;
     while (count > 0) {
       uint8_t event = tcaReadReg(REG_KEY_EVENT_A);
-      tcaWriteReg(REG_INT_STAT, 0x01); // Clear interrupt
+      tcaWriteReg(REG_INT_STAT, 0x01);
       count--;
 
       bool isPress = (event & 0x80) != 0;
@@ -103,45 +134,77 @@ char KeyboardDriver::getKey() {
         uint8_t raw_row = buffer / 10;
         uint8_t raw_col = buffer % 10;
 
-        // Cardputer interleaved matrix remap formula
-        uint8_t col = raw_row * 2;
-        if (raw_col > 3) col++;
+        uint8_t col = raw_row * 2 + (raw_col > 3 ? 1 : 0);
         uint8_t row = (raw_col + 4) % 4;
 
-        // Check Shift key (Row 2, Col 1)
         if (row == 2 && col == 1) {
           shiftActive = isPress;
           continue;
         }
+        if (row == 2 && col == 0) {
+          fnActive = isPress;
+          continue;
+        }
 
         if (isPress && row < 4 && col < 14) {
-          char c = shiftActive ? keyMapShift[row][col] : keyMapNormal[row][col];
+          char c = fnActive ? keyMapFn[row][col] : (shiftActive ? keyMapShift[row][col] : keyMapNormal[row][col]);
           if (c) {
-            Serial.printf("[Key] Physical key pressed: '%c' (row %u, col %u)\n", c, row, col);
+            Serial.printf("[Key] TCA8418 key: '%c' (row %u, col %u)\n", c, row, col);
             return c;
           }
         }
       }
     }
   }
-  // 2. Scan Standard Cardputer IO Matrix
+  // 2. Standard Cardputer 74HC138 Matrix scan
   else if (isIoMatrixPresent) {
+    uint64_t currentMatrix = 0;
+
     for (int i = 0; i < 8; i++) {
       digitalWrite(ioOutputPins[0], (i & 0x01) ? HIGH : LOW);
       digitalWrite(ioOutputPins[1], (i & 0x02) ? HIGH : LOW);
       digitalWrite(ioOutputPins[2], (i & 0x04) ? HIGH : LOW);
       delayMicroseconds(5);
 
-      for (int r = 0; r < 7; r++) {
-        if (digitalRead(ioInputPins[r]) == LOW) {
-          // Debounce delay
-          delay(15);
-          if (digitalRead(ioInputPins[r]) == LOW) {
-            uint8_t col = (i * 2) + (r >= 4 ? 1 : 0);
-            uint8_t row = (r % 4);
-            if (row < 4 && col < 14) {
-              char c = shiftActive ? keyMapShift[row][col] : keyMapNormal[row][col];
-              if (c) return c;
+      for (int j = 0; j < 7; j++) {
+        if (digitalRead(ioInputPins[j]) == LOW) {
+          uint8_t col = (i > 3) ? X_map_chart[j][0] : X_map_chart[j][1];
+          uint8_t raw_y = (i > 3) ? (i - 4) : i;
+          uint8_t row = 3 - raw_y;
+
+          if (row < 4 && col < 14) {
+            uint8_t keyIndex = row * 14 + col;
+            currentMatrix |= ((uint64_t)1 << keyIndex);
+          }
+        }
+      }
+    }
+
+    // Reset outputs
+    digitalWrite(ioOutputPins[0], LOW);
+    digitalWrite(ioOutputPins[1], LOW);
+    digitalWrite(ioOutputPins[2], LOW);
+
+    // Update modifiers
+    shiftActive = (currentMatrix & ((uint64_t)1 << (2 * 14 + 1))) != 0; // Row 2, Col 1
+    fnActive    = (currentMatrix & ((uint64_t)1 << (2 * 14 + 0))) != 0; // Row 2, Col 0
+
+    // Detect newly pressed keys (rising edge in currentMatrix vs prevKeyMatrix)
+    uint64_t newlyPressed = currentMatrix & ~prevKeyMatrix;
+    prevKeyMatrix = currentMatrix;
+
+    if (newlyPressed != 0) {
+      for (uint8_t row = 0; row < 4; row++) {
+        for (uint8_t col = 0; col < 14; col++) {
+          uint8_t keyIndex = row * 14 + col;
+          if (newlyPressed & ((uint64_t)1 << keyIndex)) {
+            // Skip pure modifier keys
+            if ((row == 2 && col <= 1) || (row == 3 && col <= 2)) continue;
+
+            char c = fnActive ? keyMapFn[row][col] : (shiftActive ? keyMapShift[row][col] : keyMapNormal[row][col]);
+            if (c) {
+              Serial.printf("[Key] Cardputer key: '%c' (row %u, col %u)\n", c, row, col);
+              return c;
             }
           }
         }
@@ -154,7 +217,7 @@ char KeyboardDriver::getKey() {
   if (Serial.available()) {
     char c = Serial.read();
     if (c == '\r' || c == '\n') return 0;
-    Serial.printf("[Key] Serial key received: '%c'\n", c);
+    Serial.printf("[Key] Serial key: '%c'\n", c);
     return c;
   }
 

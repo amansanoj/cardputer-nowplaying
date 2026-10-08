@@ -55,17 +55,20 @@ void setup() {
   // Initialize double-buffered ST7789 display
   ui.init();
 
-  // Initialize on-device artwork cache (MicroSD / LittleFS)
-  artworkCache.begin();
-
-  // Initialize hardware keyboard (TCA8418 on Cardputer-Adv or Serial fallback)
-  keyboard.begin();
-
   // Load persistent configuration
   configManager.load(appConfig);
   if (appConfig.rotation == 1 || appConfig.rotation == 3) {
     ui.setRotation(appConfig.rotation);
   }
+
+  // Draw initial status immediately so display is never blank
+  ui.renderStatus("Cardputer", "Starting up...");
+
+  // Initialize on-device artwork cache (MicroSD / LittleFS)
+  artworkCache.begin();
+
+  // Initialize hardware keyboard (auto-detects TCA8418 or 74HC138 matrix)
+  keyboard.begin();
 
   // Check G0 button held on boot to enter Setup Portal
   pinMode(0, INPUT_PULLUP);
@@ -92,13 +95,13 @@ void setup() {
 #else
   if (appConfig.transportMode == TRANSPORT_WIFI && appConfig.wifiSsid.length() > 0 && appConfig.macHost.length() > 0) {
     isWiFiMode = true;
-    Serial.println("[Cardputer-Adv] Starting Wi-Fi / WebSocket mode...");
+    Serial.println("[Cardputer] Starting Wi-Fi / WebSocket mode...");
     musicClient.setServer(appConfig.macHost, appConfig.port);
     musicClient.connectWiFi(ui, appConfig.wifiSsid, appConfig.wifiPassword);
     ui.render(currentTrack, 0, 0);
   } else {
     isWiFiMode = false;
-    Serial.println("[Cardputer-Adv] Starting Bluetooth Low Energy (BLE) mode...");
+    Serial.println("[Cardputer] Starting Bluetooth Low Energy (BLE) mode...");
     ui.renderStatus("Bluetooth", "Ready to pair...");
     bleManager.begin();
   }
@@ -124,11 +127,11 @@ void loop() {
         delay(600);
         ESP.restart();
       }
-    } else if (key == 'f' || key == 'F') {
+    } else if (key == '8' || key == 'f' || key == 'F') {
       ui.toggleRotation();
       appConfig.rotation = ui.getRotation();
       configManager.save(appConfig);
-      Serial.printf("[Display] Screen flipped to rotation %d and saved.\n", appConfig.rotation);
+      Serial.printf("[Display] Screen rotated to %d and saved.\n", appConfig.rotation);
     } else if (isWiFiMode) {
       if (key == ' ') {
         musicClient.sendCommand("toggle");
