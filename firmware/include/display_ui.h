@@ -34,6 +34,12 @@ struct FooterControl {
   bool active;
 };
 
+enum RadioMode {
+  RADIO_NONE = 0,
+  RADIO_WIFI,
+  RADIO_BLE
+};
+
 class DisplayUI {
 public:
   DisplayUI();
@@ -43,10 +49,21 @@ public:
   void renderStatus(const String& line1, const String& line2 = "");
   void renderSetupScreen(const String& apName, const String& apIP);
 
+  // Radio & Connection Status
+  void setRadioStatus(RadioMode mode, bool connected) {
+    currentRadioMode = mode;
+    isRadioConnected = connected;
+  }
+
   // Standard Header & Footer Components (modular & template-ready)
   void drawHeader(const String& clockTime, const String& screenTitle = "Now Playing");
   void drawFooter(const FooterControl* controls, size_t count);
   void drawPlaybackFooter(const String& state, char activeKey = 0);
+
+  // Screen rotation controls (180-degree flip)
+  void setRotation(uint8_t rot);
+  void toggleRotation();
+  uint8_t getRotation() const { return currentRotation; }
 
   // Force redraw on next render cycle
   void markDirty() { forceRedraw = true; }
@@ -56,6 +73,7 @@ public:
 
 private:
   Adafruit_ST7789 tft;
+  uint8_t currentRotation;
   GFXcanvas16 canvas; // 240x135 16-bit off-screen double-buffer
   uint16_t artworkBuffer[ARTWORK_SIZE * ARTWORK_SIZE];
   bool hasArtwork;
@@ -77,6 +95,10 @@ private:
   unsigned long sharedScrollStartTime;
   bool isSharedScrolling;
   String lastKnownClock;
+
+  // Radio status
+  RadioMode currentRadioMode;
+  bool isRadioConnected;
 
   void drawArtwork(int16_t x, int16_t y, int16_t size);
   void drawPlaceholderArt(int16_t x, int16_t y, int16_t size);

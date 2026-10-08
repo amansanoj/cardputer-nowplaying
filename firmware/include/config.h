@@ -18,6 +18,7 @@
 #define TFT_BL 38   // DISP_BL & RGB LED PWR_EN switch (Set HIGH)
 #define BAT_ADC_PIN 10 // Battery voltage sensing ADC (ratio 2.0)
 #define BOARD_NAME "Cardputer-Adv"
+#define DEFAULT_DISPLAY_ROTATION 3 // Physical Cardputer upright orientation
 
 // MicroSD Card SPI Configuration
 #define HAS_SD_CARD   1
@@ -38,6 +39,7 @@
 #define TFT_BL -1 // No backlight pin needed in Wokwi
 #define BAT_ADC_PIN -1
 #define BOARD_NAME "Wokwi Sim"
+#define DEFAULT_DISPLAY_ROTATION 1 // Landscape for Wokwi Simulator
 
 #define HAS_SD_CARD   0
 #define SD_SPI_SCK    -1

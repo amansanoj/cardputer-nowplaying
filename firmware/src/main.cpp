@@ -63,6 +63,9 @@ void setup() {
 
   // Load persistent configuration
   configManager.load(appConfig);
+  if (appConfig.rotation == 1 || appConfig.rotation == 3) {
+    ui.setRotation(appConfig.rotation);
+  }
 
   // Check G0 button held on boot to enter Setup Portal
   pinMode(0, INPUT_PULLUP);
@@ -121,21 +124,26 @@ void loop() {
         delay(600);
         ESP.restart();
       }
+    } else if (key == 'f' || key == 'F') {
+      ui.toggleRotation();
+      appConfig.rotation = ui.getRotation();
+      configManager.save(appConfig);
+      Serial.printf("[Display] Screen flipped to rotation %d and saved.\n", appConfig.rotation);
     } else if (isWiFiMode) {
       if (key == ' ') {
         musicClient.sendCommand("toggle");
         if (!musicClient.isWsConnected()) lastPollTime = 0;
-      } else if (key == 'p' || key == 'P') {
+      } else if (key == '.' || key == '>' || key == 'p' || key == 'P') {
         musicClient.sendCommand("previous");
+        if (!musicClient.isWsConnected()) lastPollTime = 0;
+      } else if (key == ';' || key == ':' || key == 'n' || key == 'N') {
+        musicClient.sendCommand("next");
         if (!musicClient.isWsConnected()) lastPollTime = 0;
       } else if (key == ',' || key == '<' || key == '[') {
         musicClient.sendCommand("backward");
         if (!musicClient.isWsConnected()) lastPollTime = 0;
-      } else if (key == '.' || key == '>' || key == ']') {
+      } else if (key == '/' || key == '?' || key == ']') {
         musicClient.sendCommand("forward");
-        if (!musicClient.isWsConnected()) lastPollTime = 0;
-      } else if (key == 'n' || key == 'N') {
-        musicClient.sendCommand("next");
         if (!musicClient.isWsConnected()) lastPollTime = 0;
       }
     }
@@ -143,14 +151,14 @@ void loop() {
     else {
       if (key == ' ') {
         bleManager.sendCommand("toggle");
-      } else if (key == 'p' || key == 'P') {
+      } else if (key == '.' || key == '>' || key == 'p' || key == 'P') {
         bleManager.sendCommand("prev");
+      } else if (key == ';' || key == ':' || key == 'n' || key == 'N') {
+        bleManager.sendCommand("next");
       } else if (key == ',' || key == '<' || key == '[') {
         bleManager.sendCommand("rw");
-      } else if (key == '.' || key == '>' || key == ']') {
+      } else if (key == '/' || key == '?' || key == ']') {
         bleManager.sendCommand("ff");
-      } else if (key == 'n' || key == 'N') {
-        bleManager.sendCommand("next");
       }
     }
 #endif
@@ -175,6 +183,16 @@ void loop() {
 
   // Visual highlight for active key hint in footer
   char highlightKey = (now - activeControlKeyTime < 350) ? activeControlKey : 0;
+
+#if !defined(TARGET_WOKWI_SIMULATOR)
+  if (!isWiFiMode) {
+    ui.setRadioStatus(RADIO_BLE, bleManager.isConnected());
+  } else {
+    ui.setRadioStatus(RADIO_WIFI, WiFi.status() == WL_CONNECTED);
+  }
+#else
+  ui.setRadioStatus(RADIO_WIFI, WiFi.status() == WL_CONNECTED);
+#endif
 
   // 2. Transport Communication
   if (isWiFiMode) {
@@ -242,15 +260,23 @@ void loop() {
       serverElapsed = currentTrack.elapsed;
       lastPollTime = now;
 
+      static String requestedArtworkId = "";
+      static unsigned long lastArtRequestTime = 0;
+
       if (currentTrack.isRunning && currentTrack.state != "stopped" &&
           currentTrack.artworkId.length() > 0 && currentTrack.artworkId != cachedArtworkId) {
         if (artworkCache.loadArtwork(currentTrack.artworkId, rawArtBuffer, sizeof(rawArtBuffer))) {
           Serial.printf("[BLE] Cache hit on %s. Loaded directly.\n", artworkCache.getStorageName());
           ui.setArtworkData(rawArtBuffer, sizeof(rawArtBuffer));
           cachedArtworkId = currentTrack.artworkId;
+          requestedArtworkId = currentTrack.artworkId;
         } else {
-          Serial.printf("[BLE] Requesting artwork stream for %s...\n", currentTrack.artworkId.c_str());
-          bleManager.requestArtwork(currentTrack.artworkId);
+          if (currentTrack.artworkId != requestedArtworkId || (now - lastArtRequestTime > 6000)) {
+            Serial.printf("[BLE] Requesting artwork stream for %s...\n", currentTrack.artworkId.c_str());
+            requestedArtworkId = currentTrack.artworkId;
+            lastArtRequestTime = now;
+            bleManager.requestArtwork(currentTrack.artworkId);
+          }
         }
       }
 

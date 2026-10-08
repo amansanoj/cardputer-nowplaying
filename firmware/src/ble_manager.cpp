@@ -189,6 +189,14 @@ bool BleManager::requestArtwork(const String& artworkId) {
     return false;
   }
   if (bleMutex && xSemaphoreTake(bleMutex, pdMS_TO_TICKS(100)) == pdTRUE) {
+    // If we are currently actively receiving chunks for this exact artworkId within the last 3s,
+    // don't wipe out the buffer or send duplicate requests!
+    if (currentArtId == artworkId && chunksReceivedCount > 0 && !artComplete && (millis() - lastChunkTime < 3000)) {
+      xSemaphoreGive(bleMutex);
+      Serial.printf("[BLE] Transfer for %s already in progress (%u/%u chunks). Skipping duplicate request.\n",
+                    artworkId.c_str(), chunksReceivedCount, expectedTotalChunks);
+      return true;
+    }
     currentArtId = artworkId;
     artBytesReceived = 0;
     expectedTotalChunks = 0;

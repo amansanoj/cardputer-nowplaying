@@ -861,6 +861,10 @@ class BleCompanionTask:
         self.controller = controller
         self.client: Optional[BleakClient] = None
         self.last_sent_meta = {}
+        self._art_lock = asyncio.Lock()
+        self._current_art_task: Optional[asyncio.Task] = None
+        self._current_streaming_id: Optional[str] = None
+        self._is_streaming_art = False
 
     async def run(self):
         if not HAS_BLEAK:
@@ -881,26 +885,52 @@ class BleCompanionTask:
                 print(f"[BLE] Found Cardputer! ({device.address}). Connecting...")
                 async with BleakClient(device) as client:
                     self.client = client
+                    self._is_streaming_art = False
+                    self._current_streaming_id = None
+                    self.last_sent_meta = {}
                     print("[BLE] Connected successfully to Cardputer-NowPlaying!")
 
                     # Subscribe to Cardputer keyboard controls
                     await client.start_notify(BLE_CHAR_CONTROL_UUID, self._on_control_received)
 
                     while client.is_connected:
-                        meta = self.controller.query()
-                        if meta != self.last_sent_meta:
-                            payload = json.dumps(meta).encode('utf-8')
-                            try:
-                                await client.write_gatt_char(BLE_CHAR_METADATA_UUID, payload, response=False)
-                                self.last_sent_meta = meta
-                            except Exception as e:
-                                print(f"[BLE] Send metadata error: {e}")
-                                break
-                        await asyncio.sleep(0.3)
+                        # Pause metadata push while actively streaming artwork chunks to give 100% bandwidth
+                        if not self._is_streaming_art:
+                            meta = self.controller.query()
+                            if self._should_send_meta(meta):
+                                payload = json.dumps(meta).encode('utf-8')
+                                try:
+                                    await client.write_gatt_char(BLE_CHAR_METADATA_UUID, payload, response=False)
+                                    self.last_sent_meta = meta
+                                except Exception as e:
+                                    print(f"[BLE] Send metadata error: {e}")
+                                    break
+                        await asyncio.sleep(0.5)
 
             except Exception as e:
                 print(f"[BLE] Connection lost or waiting: {e}")
+                self._is_streaming_art = False
                 await asyncio.sleep(3.0)
+
+    def _should_send_meta(self, meta: dict) -> bool:
+        if not self.last_sent_meta:
+            return True
+        # Always send immediately if track identity, player, or state changed
+        for key in ["title", "artist", "album", "state", "artwork_id", "running", "player"]:
+            if meta.get(key) != self.last_sent_meta.get(key):
+                return True
+        # If playing, send every 5 seconds to sync clock/progress without saturating BLE
+        last_epoch = self.last_sent_meta.get("epoch", 0)
+        curr_epoch = meta.get("epoch", 0)
+        if curr_epoch - last_epoch >= 5:
+            return True
+        # Or if elapsed drifted significantly (> 2s jump from seek/scrub)
+        last_elapsed = self.last_sent_meta.get("elapsed", 0)
+        curr_elapsed = meta.get("elapsed", 0)
+        expected_elapsed = last_elapsed + (curr_epoch - last_epoch)
+        if abs(curr_elapsed - expected_elapsed) >= 2:
+            return True
+        return False
 
     def _on_control_received(self, sender, data: bytearray):
         msg = data.decode('utf-8', errors='ignore').strip()
@@ -909,47 +939,71 @@ class BleCompanionTask:
 
         if msg.startswith("GET_ART:"):
             art_id = msg.split(":", 1)[1]
-            print(f"[BLE] Cardputer requested artwork ({art_id}). Streaming...")
-            asyncio.create_task(self._stream_artwork())
+            if self._current_streaming_id == art_id and self._is_streaming_art:
+                print(f"[BLE] Artwork stream for '{art_id}' already in progress. Ignoring duplicate request.")
+                return
+
+            # Cancel previous in-flight artwork stream if running
+            if self._current_art_task and not self._current_art_task.done():
+                self._current_art_task.cancel()
+
+            print(f"[BLE] Cardputer requested artwork ({art_id}). Starting stream...")
+            self._current_streaming_id = art_id
+            self._current_art_task = asyncio.create_task(self._stream_artwork(art_id))
         else:
             self.controller.execute_command(msg)
 
-    async def _stream_artwork(self):
-        if not self.client or not self.controller.cached_rgb565:
+    async def _stream_artwork(self, art_id: str):
+        if not self.client or not self.client.is_connected:
             return
 
-        data = self.controller.cached_rgb565
-        total_len = len(data)
-
-        # Detect negotiated MTU from BleakClient (macOS CoreBluetooth)
-        mtu = getattr(self.client, "mtu_size", 512)
-        # Ensure packet fits safely inside MTU: 6 bytes header + 3 bytes ATT overhead
-        safe_chunk_size = max(64, min(480, mtu - 9))
-
-        # Split data into chunks of safe_chunk_size
-        chunks = []
-        offset = 0
-        while offset < total_len:
-            chunks.append((offset, data[offset:offset + safe_chunk_size]))
-            offset += safe_chunk_size
-
-        total_chunks = len(chunks)
-
-        for idx, (chunk_offset, chunk_bytes) in enumerate(chunks):
-            # 6-byte header: [chunkIdx (2B), totalChunks (2B), targetOffset (2B)]
-            header = bytearray([
-                (idx >> 8) & 0xFF, idx & 0xFF,
-                (total_chunks >> 8) & 0xFF, total_chunks & 0xFF,
-                (chunk_offset >> 8) & 0xFF, chunk_offset & 0xFF
-            ])
-            packet = header + chunk_bytes
+        async with self._art_lock:
+            self._is_streaming_art = True
             try:
-                await self.client.write_gatt_char(BLE_CHAR_ARTWORK_UUID, packet, response=True)
-            except Exception as e:
-                print(f"[BLE] Artwork stream error on chunk {idx} (offset {chunk_offset}): {e}")
-                return
+                data = self.controller.cached_rgb565
+                if not data:
+                    print(f"[BLE] No artwork data available for {art_id}.")
+                    return
 
-        print(f"[BLE] Artwork stream complete ({total_len} bytes in {total_chunks} chunks, chunk_size={safe_chunk_size}).")
+                total_len = len(data)
+                mtu = getattr(self.client, "mtu_size", 512)
+                # Ensure packet fits safely inside MTU: 6 bytes header + 3 bytes ATT overhead
+                safe_chunk_size = max(64, min(480, mtu - 9))
+
+                chunks = []
+                offset = 0
+                while offset < total_len:
+                    chunks.append((offset, data[offset:offset + safe_chunk_size]))
+                    offset += safe_chunk_size
+
+                total_chunks = len(chunks)
+                print(f"[BLE] Streaming {total_len} bytes in {total_chunks} chunks (chunk_size={safe_chunk_size})...")
+
+                for idx, (chunk_offset, chunk_bytes) in enumerate(chunks):
+                    if not self.client or not self.client.is_connected:
+                        print("[BLE] Disconnected during artwork stream.")
+                        return
+
+                    header = bytearray([
+                        (idx >> 8) & 0xFF, idx & 0xFF,
+                        (total_chunks >> 8) & 0xFF, total_chunks & 0xFF,
+                        (chunk_offset >> 8) & 0xFF, chunk_offset & 0xFF
+                    ])
+                    packet = header + chunk_bytes
+
+                    try:
+                        await self.client.write_gatt_char(BLE_CHAR_ARTWORK_UUID, packet, response=True)
+                    except asyncio.CancelledError:
+                        print(f"[BLE] Artwork stream for {art_id} cancelled.")
+                        return
+                    except Exception as e:
+                        print(f"[BLE] Artwork stream error on chunk {idx}/{total_chunks}: {e}")
+                        return
+
+                print(f"[BLE] Artwork stream complete ({total_len} bytes in {total_chunks} chunks).")
+            finally:
+                self._is_streaming_art = False
+                self._current_streaming_id = None
 
 
 # =============================================================================

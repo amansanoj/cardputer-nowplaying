@@ -15,6 +15,7 @@ struct AppConfig {
   String wifiPassword = "";
   String macHost = "";
   uint16_t port = DEFAULT_PORT;
+  uint8_t rotation = 0; // 0 = default (3 for hardware, 1 for Wokwi)
   bool isConfigured = false;
 };
 

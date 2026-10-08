@@ -40,6 +40,7 @@ bool ConfigManager::load(AppConfig& config) {
   config.wifiPassword  = prefs.getString("password", "");
   config.macHost       = prefs.getString("host", "");
   config.port          = prefs.getUShort("port", DEFAULT_PORT);
+  config.rotation      = prefs.getUChar("rotation", 0);
   prefs.end();
 
 #if defined(TARGET_WOKWI_SIMULATOR)
@@ -69,6 +70,7 @@ void ConfigManager::save(const AppConfig& config) {
   prefs.putString("password", config.wifiPassword);
   prefs.putString("host", config.macHost);
   prefs.putUShort("port", config.port);
+  prefs.putUChar("rotation", config.rotation);
   prefs.putBool("configured", true);
   prefs.end();
   Serial.printf("[Config] Settings saved to NVS flash (Transport: %s)!\n",

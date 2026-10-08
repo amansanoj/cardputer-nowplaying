@@ -5,14 +5,16 @@
 #endif
 
 DisplayUI::DisplayUI()
-    : tft(TFT_CS, TFT_DC, TFT_RST), canvas(SCREEN_WIDTH, SCREEN_HEIGHT),
+    : tft(TFT_CS, TFT_DC, TFT_RST), currentRotation(DEFAULT_DISPLAY_ROTATION),
+      canvas(SCREEN_WIDTH, SCREEN_HEIGHT),
       hasArtwork(false), forceRedraw(true),
       lastRenderedElapsed(0xFFFFFFFF), lastRenderedKey(0),
       lastRenderedState(""), lastRenderedArtworkId(""),
       lastRenderedClock(""), lastRenderedOffsetsSum(-1),
       lastTitle(""), lastArtist(""), lastAlbum(""),
       sharedPauseStartTime(0), sharedScrollStartTime(0),
-      isSharedScrolling(false), lastKnownClock("") {
+      isSharedScrolling(false), lastKnownClock(""),
+      currentRadioMode(RADIO_BLE), isRadioConnected(false) {
   memset(artworkBuffer, 0, sizeof(artworkBuffer));
 }
 
@@ -29,13 +31,27 @@ void DisplayUI::init() {
   tft.init(SCREEN_HEIGHT, SCREEN_WIDTH); // 135x240 native panel
   // Re-bind SPI pins on ESP32-S3 (tft.init resets pins to defaults)
   SPI.begin(TFT_SCLK, -1, TFT_MOSI, TFT_CS);
-  tft.setRotation(1); // Landscape: 240x135
+  tft.setRotation(currentRotation); // Upright landscape: 3 for Cardputer-Adv, 1 for Wokwi
   tft.fillScreen(COLOR_BG);
 
   // Initialize off-screen double-buffer canvas
   canvas.setTextWrap(false);
   canvas.fillScreen(COLOR_BG);
   tft.drawRGBBitmap(0, 0, canvas.getBuffer(), SCREEN_WIDTH, SCREEN_HEIGHT);
+  forceRedraw = true;
+}
+
+void DisplayUI::setRotation(uint8_t rot) {
+  if (rot == 1 || rot == 3) {
+    currentRotation = rot;
+    tft.setRotation(currentRotation);
+    forceRedraw = true;
+  }
+}
+
+void DisplayUI::toggleRotation() {
+  currentRotation = (currentRotation == 1) ? 3 : 1;
+  tft.setRotation(currentRotation);
   forceRedraw = true;
 }
 
@@ -268,54 +284,59 @@ void DisplayUI::drawHeader(const String &clockTime, const String &screenTitle) {
     canvas.print(screenTitle);
   }
 
-  // 4. Status indicators on right: Wi-Fi RSSI + Battery info
+  // 4. Status indicators on right: Wireless Radio (BLE/WiFi) + Retro 3-Block Battery
   uint8_t batPct = 100;
   bool isCharging = false;
   getBatteryInfo(batPct, isCharging);
 
-  // Battery Capsule: 15px wide x 8px high
-  const int16_t rightX = SCREEN_WIDTH - 6;
-  const int16_t batW = 15;
-  const int16_t batH = 8;
-  const int16_t bx = rightX - batW;
-  const int16_t by = 4;
+  // Retro Battery Shell (16px wide x 9px high + 2px terminal nipple): Vintage phone style
+  const int16_t batW = 18;
+  const int16_t batH = 9;
+  const int16_t bx = SCREEN_WIDTH - 6 - batW;
+  const int16_t by = 3;
 
-  canvas.drawRoundRect(bx, by, batW - 2, batH, 2, COLOR_MUTED);
-  canvas.fillRect(bx + batW - 2, by + 2, 2, 4, COLOR_MUTED);
+  // Outer casing and positive terminal
+  canvas.drawRoundRect(bx, by, 16, batH, 2, COLOR_MUTED);
+  canvas.fillRect(bx + 16, by + 2, 2, 5, COLOR_MUTED);
 
   if (isCharging) {
-    // Charging lightning bolt in vibrant secondary accent (#f0a133)
-    canvas.drawLine(bx + 7, by + 1, bx + 5, by + 4, COLOR_SECONDARY);
-    canvas.drawLine(bx + 5, by + 4, bx + 8, by + 4, COLOR_SECONDARY);
-    canvas.drawLine(bx + 8, by + 4, bx + 6, by + 7, COLOR_SECONDARY);
+    // Charging lightning bolt in secondary amber (#f0a133)
+    canvas.drawLine(bx + 9, by + 1, bx + 7, by + 4, COLOR_SECONDARY);
+    canvas.drawLine(bx + 7, by + 4, bx + 11, by + 4, COLOR_SECONDARY);
+    canvas.drawLine(bx + 11, by + 4, bx + 8, by + 8, COLOR_SECONDARY);
   } else {
-    int16_t fillW = (batPct * 9) / 100;
-    if (fillW > 0) {
-      uint16_t fillColor = (batPct <= 15) ? COLOR_ACCENT : COLOR_PRIMARY;
-      canvas.fillRect(bx + 2, by + 2, fillW, 4, fillColor);
-    }
+    // 3 distinct internal blocks (3px wide x 5px high each, 1px gap)
+    uint8_t numBlocks = (batPct >= 65) ? 3 : ((batPct >= 28) ? 2 : ((batPct >= 8) ? 1 : 0));
+    uint16_t blockColor = (batPct <= 15) ? COLOR_ACCENT : COLOR_PRIMARY;
+
+    if (numBlocks >= 1) canvas.fillRect(bx + 2, by + 2, 3, 5, blockColor);
+    if (numBlocks >= 2) canvas.fillRect(bx + 6, by + 2, 3, 5, blockColor);
+    if (numBlocks >= 3) canvas.fillRect(bx + 10, by + 2, 3, 5, blockColor);
   }
 
-  // Battery Percentage Text (e.g. "95%")
-  char pctStr[8];
-  snprintf(pctStr, sizeof(pctStr), "%u%%", batPct);
-  size_t pctLen = strlen(pctStr);
-  int16_t pctX = bx - 3 - (pctLen * 6);
-  canvas.setTextSize(1);
-  canvas.setTextColor(COLOR_TEXT);
-  canvas.setCursor(pctX, by);
-  canvas.print(pctStr);
+  // Radio Status Indicator (Bluetooth rune or Wi-Fi meter) positioned to the left of battery
+  const int16_t rx = bx - 14;
+  const int16_t ry = by;
 
-  // Wi-Fi Signal indicator (3 bars, warm secondary accent on active connection)
-  int8_t rssi = (WiFi.status() == WL_CONNECTED) ? WiFi.RSSI() : -100;
-  int16_t wx = pctX - 6 - 8;
-  uint16_t b1 = (rssi > -90) ? COLOR_SECONDARY : COLOR_BAR_BG;
-  uint16_t b2 = (rssi > -75) ? COLOR_SECONDARY : COLOR_BAR_BG;
-  uint16_t b3 = (rssi > -65) ? COLOR_SECONDARY : COLOR_BAR_BG;
+  if (currentRadioMode == RADIO_BLE) {
+    // Crisp Bluetooth Rune (5px wide x 9px high)
+    uint16_t btColor = isRadioConnected ? COLOR_PRIMARY : COLOR_BAR_BG;
+    canvas.drawFastVLine(rx + 4, ry, 9, btColor);
+    canvas.drawLine(rx + 2, ry + 2, rx + 6, ry + 6, btColor);
+    canvas.drawLine(rx + 6, ry + 6, rx + 4, ry + 8, btColor);
+    canvas.drawLine(rx + 2, ry + 6, rx + 6, ry + 2, btColor);
+    canvas.drawLine(rx + 6, ry + 2, rx + 4, ry, btColor);
+  } else {
+    // Wi-Fi Signal Bars (3 bars, warm secondary accent on active connection)
+    int8_t rssi = (WiFi.status() == WL_CONNECTED) ? WiFi.RSSI() : -100;
+    uint16_t b1 = (rssi > -90) ? COLOR_SECONDARY : COLOR_BAR_BG;
+    uint16_t b2 = (rssi > -75) ? COLOR_SECONDARY : COLOR_BAR_BG;
+    uint16_t b3 = (rssi > -65) ? COLOR_SECONDARY : COLOR_BAR_BG;
 
-  canvas.fillRect(wx, by + 5, 2, 3, b1);
-  canvas.fillRect(wx + 3, by + 3, 2, 5, b2);
-  canvas.fillRect(wx + 6, by + 1, 2, 7, b3);
+    canvas.fillRect(rx, ry + 6, 2, 3, b1);
+    canvas.fillRect(rx + 3, ry + 4, 2, 5, b2);
+    canvas.fillRect(rx + 6, ry + 2, 2, 7, b3);
+  }
 
   // Header bottom divider line
   canvas.drawFastHLine(0, HEADER_HEIGHT, SCREEN_WIDTH, COLOR_DIVIDER);
@@ -396,11 +417,11 @@ void DisplayUI::drawPlaybackFooter(const String &state, char activeKey) {
   bool isPlaying = (state == "playing");
   FooterControl controls[5];
 
-  controls[0] = { "Prev", "P", ICON_PREV, (activeKey == 'p' || activeKey == 'P') };
-  controls[1] = { "-10s", "<", ICON_REWIND, (activeKey == ',' || activeKey == '<' || activeKey == '[') };
+  controls[0] = { "Prev", ".", ICON_PREV, (activeKey == '.' || activeKey == '>' || activeKey == 'p' || activeKey == 'P') };
+  controls[1] = { "-10s", ",", ICON_REWIND, (activeKey == ',' || activeKey == '<' || activeKey == '[') };
   controls[2] = { isPlaying ? "Pause" : "Play", "Spc", isPlaying ? ICON_PAUSE : ICON_PLAY, (activeKey == ' ') };
-  controls[3] = { "+10s", ">", ICON_FORWARD, (activeKey == '.' || activeKey == '>' || activeKey == ']') };
-  controls[4] = { "Next", "N", ICON_NEXT, (activeKey == 'n' || activeKey == 'N') };
+  controls[3] = { "+10s", "/", ICON_FORWARD, (activeKey == '/' || activeKey == '?' || activeKey == ']') };
+  controls[4] = { "Next", ";", ICON_NEXT, (activeKey == ';' || activeKey == ':' || activeKey == 'n' || activeKey == 'N') };
 
   drawFooter(controls, 5);
 }
