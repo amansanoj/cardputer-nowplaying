@@ -874,7 +874,11 @@ class BleCompanionTask:
         while True:
             try:
                 device = await BleakScanner.find_device_by_filter(
-                    lambda d, ad: d.name and BLE_DEVICE_NAME.lower() in d.name.lower(),
+                    lambda d, ad: (
+                        (d.name and BLE_DEVICE_NAME.lower() in d.name.lower()) or
+                        (ad.local_name and BLE_DEVICE_NAME.lower() in ad.local_name.lower()) or
+                        (BLE_SERVICE_UUID.lower() in [str(s).lower() for s in (ad.service_uuids or [])])
+                    ),
                     timeout=4.0
                 )
 
