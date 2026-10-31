@@ -148,61 +148,53 @@ class MusicController:
             tz_offset = -time.timezone if (time.daylight == 0) else -time.altzone
             clock_str = time.strftime("%H:%M")
 
-            jxa_script = '''
+            jxa_script = r'''
             (function() {
-                var musicRunning = false;
-                var spotifyRunning = false;
-                try { musicRunning = Application("Music").running(); } catch(e) {}
-                try { spotifyRunning = Application("Spotify").running(); } catch(e) {}
-
-                if (musicRunning) {
-                    var music = Application("Music");
-                    var mState = music.playerState();
-                    if (mState === "playing" || (!spotifyRunning && mState !== "stopped")) {
-                        var mTrack = music.currentTrack;
-                        return JSON.stringify({
-                            player: "Music",
-                            running: true,
-                            state: mState,
-                            title: mTrack.name() || "",
-                            artist: mTrack.artist() || "",
-                            album: mTrack.album() || "",
-                            duration: Math.round(mTrack.duration() || 0),
-                            elapsed: Math.round(music.playerPosition() || 0),
-                            has_art: mTrack.artworks.length > 0
-                        });
+                var preferred = __PREFERRED_PLAYER__;
+                function readPlayer(name) {
+                    try {
+                        var app = Application(name);
+                        if (!app.running()) return null;
+                        var state = app.playerState();
+                        var result = {player: name, running: true, state: state};
+                        if (state !== "playing" && state !== "paused") return result;
+                        var track = app.currentTrack;
+                        result.title = track.name() || "";
+                        result.artist = track.artist() || "";
+                        result.album = track.album() || "";
+                        result.duration = Math.round((track.duration() || 0) / (name === "Spotify" ? 1000 : 1));
+                        result.elapsed = Math.round(app.playerPosition() || 0);
+                        // Artwork failures must not discard a valid paused track.
+                        result.has_art = false;
+                        try {
+                            if (name === "Spotify") {
+                                result.artwork_url = track.artworkUrl() || "";
+                                result.has_art = result.artwork_url.length > 0;
+                            } else {
+                                result.has_art = track.artworks.length > 0;
+                            }
+                        } catch (e) {}
+                        return result;
+                    } catch (e) { return null; }
+                }
+                var players = [readPlayer("Music"), readPlayer("Spotify")];
+                // Playing wins over paused; retain the selected player on ties.
+                for (var s = 0; s < 2; s++) {
+                    var state = s === 0 ? "playing" : "paused";
+                    var fallback = null;
+                    for (var i = 0; i < players.length; i++) {
+                        var p = players[i];
+                        if (p && p.state === state) {
+                            if (p.player === preferred) return JSON.stringify(p);
+                            if (!fallback) fallback = p;
+                        }
                     }
+                    if (fallback) return JSON.stringify(fallback);
                 }
-
-                if (spotifyRunning) {
-                    var spotify = Application("Spotify");
-                    var sState = spotify.playerState();
-                    if (sState !== "stopped") {
-                        var sTrack = spotify.currentTrack;
-                        return JSON.stringify({
-                            player: "Spotify",
-                            running: true,
-                            state: sState,
-                            title: sTrack.name() || "",
-                            artist: sTrack.artist() || "",
-                            album: sTrack.album() || "",
-                            duration: Math.round((sTrack.duration() || 0) / 1000),
-                            elapsed: Math.round(spotify.playerPosition() || 0),
-                            has_art: (sTrack.artworkUrl() || "").length > 0,
-                            artwork_url: sTrack.artworkUrl() || ""
-                        });
-                    }
-                }
-
-                if (musicRunning) {
-                    return JSON.stringify({ player: "Music", running: true, state: "stopped" });
-                }
-                if (spotifyRunning) {
-                    return JSON.stringify({ player: "Spotify", running: true, state: "stopped" });
-                }
-                return JSON.stringify({ player: "none", running: false, state: "stopped" });
+                return JSON.stringify(players[0] || players[1] ||
+                    {player: "none", running: false, state: "stopped"});
             })();
-            '''
+            '''.replace("__PREFERRED_PLAYER__", json.dumps(self.active_player))
 
             try:
                 res = subprocess.run(

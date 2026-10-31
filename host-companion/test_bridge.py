@@ -105,6 +105,7 @@ def run_tests():
     time.sleep(0.2)
 
     sock = socket.socket()
+    sock.settimeout(5)
     sock.connect(('127.0.0.1', test_port))
     handshake_req = (
         f"GET /ws HTTP/1.1\r\n"
@@ -115,7 +116,12 @@ def run_tests():
         f"Sec-WebSocket-Version: 13\r\n\r\n"
     )
     sock.sendall(handshake_req.encode())
-    resp = sock.recv(1024)
+    # Read only HTTP headers; recv(1024) may also consume the first WS frame.
+    resp = b""
+    while not resp.endswith(b"\r\n\r\n"):
+        chunk = sock.recv(1)
+        assert chunk, "Connection closed during WebSocket handshake"
+        resp += chunk
     assert b"101 Switching Protocols" in resp
     assert b"Sec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo=" in resp
 
