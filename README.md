@@ -112,9 +112,10 @@ Setup requires holding G0 for 1.2 seconds; ordinary letter keys never open setti
 The display always uses its fixed upright orientation. `8` and `F` have no action.
 Shifted bracket shortcuts (`{` / `}`) also seek backward / forward.
 
-GitHub Actions builds both targets on push. Download the `firmware-<commit>` artifact
-from the **Firmware and controls** workflow for the Cardputer factory image,
-application image, Wokwi image, and SHA256 checksums.
+Firmware is compiled locally with PlatformIO. Both targets pin Espressif32 6.9.0
+(Arduino ESP32 2.0.17), including the ESP-IDF WebSocket client used by the bridge.
+Build outputs are `firmware/.pio/build/cardputer-adv/firmware.bin` and
+`firmware/.pio/build/esp32s3/firmware.bin`.
 
 
 ## Local Development
