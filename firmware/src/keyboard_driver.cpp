@@ -45,6 +45,9 @@ static const uint8_t X_map_chart[7][2] = {
 
 // Previous state bitmask for 4 rows x 14 cols (56 keys)
 static uint64_t prevKeyMatrix = 0;
+static uint64_t sampledMatrix = 0;
+static uint64_t pendingKeys = 0;
+static unsigned long matrixChangedAt = 0;
 
 static uint8_t tcaReadReg(uint8_t reg) {
   Wire.beginTransmission(TCA8418_I2C_ADDR);
@@ -117,7 +120,7 @@ bool KeyboardDriver::begin() {
 #endif
 }
 
-char KeyboardDriver::getKey() {
+char KeyboardDriver::getKey(bool readSerial) {
 #if !defined(TARGET_WOKWI_SIMULATOR)
   // 1. TCA8418 scan (Cardputer-Adv)
   if (isTcaPresent) {
@@ -147,7 +150,7 @@ char KeyboardDriver::getKey() {
         }
 
         if (isPress && row < 4 && col < 14) {
-          char c = fnActive ? keyMapFn[row][col] : (shiftActive ? keyMapShift[row][col] : keyMapNormal[row][col]);
+          char c = (fnActive && keyMapFn[row][col]) ? keyMapFn[row][col] : (shiftActive ? keyMapShift[row][col] : keyMapNormal[row][col]);
           if (c) {
             Serial.printf("[Key] TCA8418 key: '%c' (row %u, col %u)\n", c, row, col);
             return c;
@@ -185,12 +188,20 @@ char KeyboardDriver::getKey() {
     digitalWrite(ioOutputPins[1], LOW);
     digitalWrite(ioOutputPins[2], LOW);
 
+    // Accept only a stable matrix; retain every press until it is consumed.
+    if (currentMatrix != sampledMatrix) {
+      sampledMatrix = currentMatrix;
+      matrixChangedAt = millis();
+    }
+    if (millis() - matrixChangedAt < 20) return 0;
+
     // Update modifiers
     shiftActive = (currentMatrix & ((uint64_t)1 << (2 * 14 + 1))) != 0; // Row 2, Col 1
     fnActive    = (currentMatrix & ((uint64_t)1 << (2 * 14 + 0))) != 0; // Row 2, Col 0
 
     // Detect newly pressed keys (rising edge in currentMatrix vs prevKeyMatrix)
-    uint64_t newlyPressed = currentMatrix & ~prevKeyMatrix;
+    pendingKeys |= currentMatrix & ~prevKeyMatrix;
+    uint64_t newlyPressed = pendingKeys;
     prevKeyMatrix = currentMatrix;
 
     if (newlyPressed != 0) {
@@ -198,10 +209,11 @@ char KeyboardDriver::getKey() {
         for (uint8_t col = 0; col < 14; col++) {
           uint8_t keyIndex = row * 14 + col;
           if (newlyPressed & ((uint64_t)1 << keyIndex)) {
+            pendingKeys &= ~((uint64_t)1 << keyIndex);
             // Skip pure modifier keys
             if ((row == 2 && col <= 1) || (row == 3 && col <= 2)) continue;
 
-            char c = fnActive ? keyMapFn[row][col] : (shiftActive ? keyMapShift[row][col] : keyMapNormal[row][col]);
+            char c = (fnActive && keyMapFn[row][col]) ? keyMapFn[row][col] : (shiftActive ? keyMapShift[row][col] : keyMapNormal[row][col]);
             if (c) {
               Serial.printf("[Key] Cardputer key: '%c' (row %u, col %u)\n", c, row, col);
               return c;
@@ -214,7 +226,7 @@ char KeyboardDriver::getKey() {
 #endif
 
   // Serial input fallback (for Wokwi simulation and USB console)
-  if (Serial.available()) {
+  if (readSerial && Serial.available()) {
     char c = Serial.read();
     if (c == '\r' || c == '\n') return 0;
     Serial.printf("[Key] Serial key: '%c'\n", c);

@@ -5,7 +5,7 @@ class KeyboardDriver {
 public:
   KeyboardDriver();
   bool begin();
-  char getKey();
+  char getKey(bool readSerial = true);
   bool isHardwarePresent() const { return hardwarePresent; }
 
 private:

@@ -13,6 +13,8 @@ import hashlib
 import threading
 import json
 import time
+import subprocess
+from unittest.mock import patch
 
 # Add host-companion directory to path
 sys.path.insert(0, os.path.dirname(__file__))
@@ -72,6 +74,11 @@ def run_tests():
     # 6. Test control playback command dispatch
     assert not controller.execute_command("unknown_invalid_cmd"), "Unknown action should fail"
     print("✓ Control playback validation verified (unknown action rejected)")
+
+    # A player error must not be reported as a successful control action.
+    with patch("bridge.subprocess.run", side_effect=subprocess.CalledProcessError(1, "osascript")):
+        assert not controller.execute_command("toggle")
+    print("✓ AppleScript command failures reported correctly")
 
     # 7. Test RFC 6455 WebSocket frame encoding & decoding
     test_msg = '{"action":"test_ping"}'

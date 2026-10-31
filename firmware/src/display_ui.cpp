@@ -41,20 +41,6 @@ void DisplayUI::init() {
   forceRedraw = true;
 }
 
-void DisplayUI::setRotation(uint8_t rot) {
-  if (rot == 1 || rot == 3) {
-    currentRotation = rot;
-    tft.setRotation(currentRotation);
-    forceRedraw = true;
-  }
-}
-
-void DisplayUI::toggleRotation() {
-  currentRotation = (currentRotation == 1) ? 3 : 1;
-  tft.setRotation(currentRotation);
-  forceRedraw = true;
-}
-
 void DisplayUI::setArtworkData(const uint8_t *rawData, size_t length) {
   size_t expectedSize = ARTWORK_SIZE * ARTWORK_SIZE * 2;
   if (length >= expectedSize && rawData != nullptr) {
@@ -417,11 +403,11 @@ void DisplayUI::drawPlaybackFooter(const String &state, char activeKey) {
   bool isPlaying = (state == "playing");
   FooterControl controls[5];
 
-  controls[0] = { "Prev", ".", ICON_PREV, (activeKey == '.' || activeKey == '>' || activeKey == 'p' || activeKey == 'P') };
-  controls[1] = { "-10s", ",", ICON_REWIND, (activeKey == ',' || activeKey == '<' || activeKey == '[') };
+  controls[0] = { "Prev", "P", ICON_PREV, (activeKey == 'p' || activeKey == 'P') };
+  controls[1] = { "-10s", "<", ICON_REWIND, (activeKey == ',' || activeKey == '<' || activeKey == '[' || activeKey == '{') };
   controls[2] = { isPlaying ? "Pause" : "Play", "Spc", isPlaying ? ICON_PAUSE : ICON_PLAY, (activeKey == ' ') };
-  controls[3] = { "+10s", "/", ICON_FORWARD, (activeKey == '/' || activeKey == '?' || activeKey == ']') };
-  controls[4] = { "Next", ";", ICON_NEXT, (activeKey == ';' || activeKey == ':' || activeKey == 'n' || activeKey == 'N') };
+  controls[3] = { "+10s", ">", ICON_FORWARD, (activeKey == '.' || activeKey == '>' || activeKey == ']' || activeKey == '}') };
+  controls[4] = { "Next", "N", ICON_NEXT, (activeKey == 'n' || activeKey == 'N') };
 
   drawFooter(controls, 5);
 }

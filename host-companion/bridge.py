@@ -293,7 +293,7 @@ class MusicController:
             return False
 
         try:
-            subprocess.run(["osascript", "-e", actions[cmd]], timeout=1.0)
+            subprocess.run(["osascript", "-e", actions[cmd]], timeout=1.0, check=True)
             self.last_query_time = 0  # Invalidate cached metadata
             return True
         except Exception as e:

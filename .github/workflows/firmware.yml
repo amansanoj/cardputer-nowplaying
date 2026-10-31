@@ -1,0 +1,38 @@
+name: Firmware and controls
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install platformio==6.1.18 Pillow==13.0.0 esptool==4.11.0
+      - name: Test control mapping
+        run: |
+          g++ -std=c++11 -Ifirmware/include tests/test_playback_controls.cpp -o /tmp/test-controls
+          /tmp/test-controls
+      - name: Test companion
+        run: python host-companion/test_bridge.py
+      - name: Build both targets
+        working-directory: firmware
+        run: pio run -j 2
+      - name: Prepare firmware binaries
+        run: |
+          mkdir -p artifacts
+          cp firmware/.pio/build/cardputer-adv/firmware.bin artifacts/cardputer-adv-firmware.bin
+          cp firmware/.pio/build/esp32s3/firmware.bin artifacts/wokwi-esp32s3-firmware.bin
+          python -m esptool --chip esp32s3 merge_bin -o artifacts/cardputer-adv-factory.bin --flash_size 8MB 0x0 firmware/.pio/build/cardputer-adv/bootloader.bin 0x8000 firmware/.pio/build/cardputer-adv/partitions.bin 0xe000 ~/.platformio/packages/framework-arduinoespressif32/tools/partitions/boot_app0.bin 0x10000 firmware/.pio/build/cardputer-adv/firmware.bin
+          cd artifacts
+          sha256sum *.bin > SHA256SUMS
+      - uses: actions/upload-artifact@v4
+        with:
+          name: firmware-${{ github.sha }}
+          path: artifacts/
+          if-no-files-found: error

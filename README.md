@@ -44,7 +44,7 @@ Once running:
 - **Synchronized Shared Clock Marquee**: Overflowing title, artist, and album text lines pause together for 10 seconds, scroll forward simultaneously at 40ms/px, park smoothly upon completion, and reset the shared 10s timer when all lines finish.
 - **Dynamic Island Pause Badge**: When paused, an elegant 16×16px rounded badge (`#270c0e` with `#df9a9e` border and bars) overlays the bottom-right corner of the artwork.
 - **Minimalist Idle State**: Displays clean `"Not Playing"` vertically centered when Apple Music is idle or stopped.
-- **First-Boot Captive Portal Onboarding**: On first boot or holding `G0` / pressing `s`, boots into `cardputer-nowplaying-setup` (`http://192.168.4.1`) to scan Wi-Fi networks and save credentials to NVS flash.
+- **First-Boot Captive Portal Onboarding**: On first boot or holding `G0`, boots into `cardputer-nowplaying-setup` (`http://192.168.4.1`) to scan Wi-Fi networks and save credentials to NVS flash.
 - **Physical Keyboard Controls**: Full Cardputer-Adv keyboard integration via TCA8418 I2C driver and USB Serial fallback.
 - **Native macOS Companion Bridge**: Zero `pip` dependencies; uses built-in AppleScript (`osascript`) and macOS `sips` to downscale artwork to 72×72 16-bit RGB565 binary buffers (`/artwork.raw`).
 - **On-Device MicroSD & LittleFS Artwork Caching**: Once an album's 72×72 RGB565 artwork is retrieved from the companion bridge, it is saved directly to the MicroSD card (or internal flash via LittleFS if no SD card is inserted). Subsequent plays load the artwork locally in ~4ms, eliminating network latency and bandwidth overhead.
@@ -104,8 +104,17 @@ When running on the Cardputer / Cardputer-Adv, you have full playback and device
 | **`Space`** | Play / Pause Toggle | `POST /api/toggle` | `[Spc] Play/Pause` |
 | **`.`** or **`>`** or **`]`** | Seek Forward (+10s) | `POST /api/forward` | `[>] +10s` |
 | **`n`** or **`N`** | Next Track | `POST /api/next` | `[N] Next` |
-| **`s`** or **`G0`** | Re-enter Wi-Fi Setup Portal | Spawns AP mode (`192.168.4.1`) | `[G0] Setup` |
+| **Hold `G0` (1.2s)** | Re-enter Wi-Fi Setup Portal | Spawns AP mode (`192.168.4.1`) | `[G0] Setup` |
 | **`r`** or **`R`** | Reboot Device (in Setup Screen) | Restarts ESP32 | `[R] Reboot` |
+
+
+Setup requires holding G0 for 1.2 seconds; ordinary letter keys never open settings.
+The display always uses its fixed upright orientation. `8` and `F` have no action.
+Shifted bracket shortcuts (`{` / `}`) also seek backward / forward.
+
+GitHub Actions builds both targets on push. Download the `firmware-<commit>` artifact
+from the **Firmware and controls** workflow for the Cardputer factory image,
+application image, Wokwi image, and SHA256 checksums.
 
 
 ## Local Development

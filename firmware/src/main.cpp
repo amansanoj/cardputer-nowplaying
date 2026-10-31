@@ -2,6 +2,7 @@
 #include "config.h"
 #include "display_ui.h"
 #include "keyboard_driver.h"
+#include "playback_controls.h"
 #include "artwork_cache.h"
 #include "config_manager.h"
 #include "music_client.h"
@@ -57,9 +58,6 @@ void setup() {
 
   // Load persistent configuration
   configManager.load(appConfig);
-  if (appConfig.rotation == 1 || appConfig.rotation == 3) {
-    ui.setRotation(appConfig.rotation);
-  }
 
   // Draw initial status immediately so display is never blank
   ui.renderStatus("Cardputer", "Starting up...");
@@ -120,51 +118,21 @@ void loop() {
     activeControlKey = key;
     activeControlKeyTime = now;
 
-    if (key == 's' || key == 'S') {
-      if (configManager.runSetupPortal(ui, appConfig, &keyboard)) {
-        Serial.println("[Setup] Saved! Rebooting to apply new configuration...");
-        ui.renderStatus("Rebooting...", "Applying settings");
-        delay(600);
-        ESP.restart();
+    const char* command = playbackCommand(key);
+    bool sent = false;
+    if (command) {
+      if (isWiFiMode) {
+        sent = musicClient.sendCommand(command);
+        if (sent && !musicClient.isWsConnected()) lastPollTime = 0;
       }
-    } else if (key == '8' || key == 'f' || key == 'F') {
-      ui.toggleRotation();
-      appConfig.rotation = ui.getRotation();
-      configManager.save(appConfig);
-      Serial.printf("[Display] Screen rotated to %d and saved.\n", appConfig.rotation);
-    } else if (isWiFiMode) {
-      if (key == ' ') {
-        musicClient.sendCommand("toggle");
-        if (!musicClient.isWsConnected()) lastPollTime = 0;
-      } else if (key == '.' || key == '>' || key == 'p' || key == 'P') {
-        musicClient.sendCommand("previous");
-        if (!musicClient.isWsConnected()) lastPollTime = 0;
-      } else if (key == ';' || key == ':' || key == 'n' || key == 'N') {
-        musicClient.sendCommand("next");
-        if (!musicClient.isWsConnected()) lastPollTime = 0;
-      } else if (key == ',' || key == '<' || key == '[') {
-        musicClient.sendCommand("backward");
-        if (!musicClient.isWsConnected()) lastPollTime = 0;
-      } else if (key == '/' || key == '?' || key == ']') {
-        musicClient.sendCommand("forward");
-        if (!musicClient.isWsConnected()) lastPollTime = 0;
-      }
-    }
 #if !defined(TARGET_WOKWI_SIMULATOR)
-    else {
-      if (key == ' ') {
-        bleManager.sendCommand("toggle");
-      } else if (key == '.' || key == '>' || key == 'p' || key == 'P') {
-        bleManager.sendCommand("prev");
-      } else if (key == ';' || key == ':' || key == 'n' || key == 'N') {
-        bleManager.sendCommand("next");
-      } else if (key == ',' || key == '<' || key == '[') {
-        bleManager.sendCommand("rw");
-      } else if (key == '/' || key == '?' || key == ']') {
-        bleManager.sendCommand("ff");
+      else sent = bleManager.sendCommand(command);
+#endif
+      if (!sent) {
+        activeControlKey = 0;
+        Serial.println("[Control] Command could not be sent; check connection.");
       }
     }
-#endif
   }
 
   // Check G0 button long-press in loop to launch setup portal

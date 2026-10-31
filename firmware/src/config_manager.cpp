@@ -40,7 +40,6 @@ bool ConfigManager::load(AppConfig& config) {
   config.wifiPassword  = prefs.getString("password", "");
   config.macHost       = prefs.getString("host", "");
   config.port          = prefs.getUShort("port", DEFAULT_PORT);
-  config.rotation      = prefs.getUChar("rotation", 0);
   prefs.end();
 
 #if defined(TARGET_WOKWI_SIMULATOR)
@@ -70,7 +69,6 @@ void ConfigManager::save(const AppConfig& config) {
   prefs.putString("password", config.wifiPassword);
   prefs.putString("host", config.macHost);
   prefs.putUShort("port", config.port);
-  prefs.putUChar("rotation", config.rotation);
   prefs.putBool("configured", true);
   prefs.end();
   Serial.printf("[Config] Settings saved to NVS flash (Transport: %s)!\n",
@@ -481,6 +479,7 @@ bool ConfigManager::runSetupPortal(DisplayUI& ui, AppConfig& config, KeyboardDri
   unsigned long simSetupStart = millis();
 #endif
 
+  bool g0Released = false;
   // Run captive loop until user submits or provides exit/reboot command
   while (!configSaved) {
     dnsServer.processNextRequest();
@@ -488,7 +487,7 @@ bool ConfigManager::runSetupPortal(DisplayUI& ui, AppConfig& config, KeyboardDri
 
     // 1. Physical Keyboard checks (Exit or Reboot)
     if (keyboard) {
-      char k = keyboard->getKey();
+      char k = keyboard->getKey(false);
       if (k == 'r' || k == 'R') {
         Serial.println("[Setup] Reboot requested via keyboard!");
         delay(100);
@@ -501,9 +500,11 @@ bool ConfigManager::runSetupPortal(DisplayUI& ui, AppConfig& config, KeyboardDri
 
     // 2. Hardware G0 button check
     pinMode(0, INPUT_PULLUP);
-    if (digitalRead(0) == LOW) {
+    if (digitalRead(0) == HIGH) g0Released = true;
+    if (g0Released && digitalRead(0) == LOW) {
       delay(60);
-      if (digitalRead(0) == LOW) {
+      if (digitalRead(0) == HIGH) g0Released = true;
+    if (g0Released && digitalRead(0) == LOW) {
         Serial.println("[Setup] G0 pressed. Exiting setup portal...");
         break;
       }
@@ -579,6 +580,9 @@ bool ConfigManager::runSetupPortal(DisplayUI& ui, AppConfig& config, KeyboardDri
   WiFi.softAPdisconnect(true);
   WiFi.scanDelete();
   WiFi.mode(WIFI_STA);
+  if (!configSaved && config.transportMode == TRANSPORT_WIFI) {
+    WiFi.begin(config.wifiSsid.c_str(), config.wifiPassword.c_str());
+  }
   delay(100);
 
   if (configSaved) {

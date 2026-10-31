@@ -60,11 +60,6 @@ public:
   void drawFooter(const FooterControl* controls, size_t count);
   void drawPlaybackFooter(const String& state, char activeKey = 0);
 
-  // Screen rotation controls (180-degree flip)
-  void setRotation(uint8_t rot);
-  void toggleRotation();
-  uint8_t getRotation() const { return currentRotation; }
-
   // Force redraw on next render cycle
   void markDirty() { forceRedraw = true; }
 
