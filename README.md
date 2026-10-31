@@ -29,7 +29,7 @@ Once running:
 - **Wireless Bluetooth Low Energy (BLE) Mode**: Physical Cardputer runs on battery and communicates directly with macOS over BLE (`Cardputer-NowPlaying`). Zero Wi-Fi passwords, zero hotspot battery drain, and zero campus network restrictions.
 - **Fast MicroSD Artwork Caching**: Album art is streamed once and saved to the MicroSD card. Subsequent plays load locally in ~4ms without network or BLE latency.
 - **Streamlined Wokwi Simulator**: Direct fast-boot into Wi-Fi mode for instant browser simulation and layout preview without setup screens or delays.
-- **Instant Full-Duplex Controls**: Sub-50ms playback toggle, skip, rewind, and seek from Cardputer's physical keyboard (`Space`, `N`, `P`, `<`, `>`).
+- **Instant Full-Duplex Controls**: Sub-50ms playback toggle, skip, rewind, and seek from Cardputer's physical keyboard (`Space`, `[`, `]`, `,`, `.`).
 - **Vertically Centered Typography**: The 4-line text block (`y = 32`, `46`, `62`, `78`) is vertically centered against the 72×72 album art (`y = 24..96`, midpoint `y = 60`), perfectly balanced with 8px top and 10px bottom margins.
 - **Fixed 2-Line Title Layout**: Always reserves two dedicated lines for song title (`y = 32` and `y = 46`), preventing vertical layout shift. Artist (`y = 62`) and Album (`y = 78`) remain strictly anchored.
 - **Curated 60-30-10 Color System**: Built on high-contrast tokens:
@@ -39,7 +39,7 @@ Once running:
 - **Symmetric 8px Layout Padding**: Uniform 8px top, bottom, left, and right margins framing a crisp 72×72 square artwork with radius 4 rounded corners and a subtle outline border.
 - **Full-Width Modular Header**: Features synchronized local time on left, `"Now Playing"` in center, and live 3-bar Wi-Fi RSSI meter + battery gauge with charging indicator (`⚡`) on right.
 - **Resilient NTP & Hardware RTC Timekeeping**: Built-in SNTP background synchronization with host companion timestamp fallback. Local RTC continues advancing independently, guaranteeing the header clock never drops to `--:--`.
-- **Standard Control Footer**: Features dedicated control pills with vector icons and tactile keyboard hints (`[P] Prev`, `[<] -10s`, `[Spc] Play/Pause`, `[>] +10s`, `[N] Next`).
+- **Standard Control Footer**: Features dedicated control pills with vector icons and tactile keyboard hints (`[[] Prev`, `[<] -10s`, `[Spc] Play/Pause`, `[>] +10s`, `[]] Next`).
 - **Seeking Support**: Built-in 10-second fast-forward and rewind controls communicating with macOS `Music.app`.
 - **Synchronized Shared Clock Marquee**: Overflowing title, artist, and album text lines pause together for 10 seconds, scroll forward simultaneously at 40ms/px, park smoothly upon completion, and reset the shared 10s timer when all lines finish.
 - **Dynamic Island Pause Badge**: When paused, an elegant 16×16px rounded badge (`#270c0e` with `#df9a9e` border and bars) overlays the bottom-right corner of the artwork.
@@ -99,18 +99,19 @@ When running on the Cardputer / Cardputer-Adv, you have full playback and device
 
 | Key | Action | Endpoint | Footer Pill |
 |---|---|---|---|
-| **`p`** or **`P`** | Previous Track | `POST /api/previous` | `[P] Prev` |
-| **`,`** or **`<`** or **`[`** | Seek Backward (-10s) | `POST /api/backward` | `[<] -10s` |
+| **`[`** or **`{`** | Previous Track | `POST /api/previous` | `[[] Prev` |
+| **`,`** or **`<`** | Seek Backward (-10s) | `POST /api/backward` | `[<] -10s` |
 | **`Space`** | Play / Pause Toggle | `POST /api/toggle` | `[Spc] Play/Pause` |
-| **`.`** or **`>`** or **`]`** | Seek Forward (+10s) | `POST /api/forward` | `[>] +10s` |
-| **`n`** or **`N`** | Next Track | `POST /api/next` | `[N] Next` |
+| **`.`** or **`>`** | Seek Forward (+10s) | `POST /api/forward` | `[>] +10s` |
+| **`]`** or **`}`** | Next Track | `POST /api/next` | `[]] Next` |
 | **Hold `G0` (1.2s)** | Re-enter Wi-Fi Setup Portal | Spawns AP mode (`192.168.4.1`) | `[G0] Setup` |
 | **`r`** or **`R`** | Reboot Device (in Setup Screen) | Restarts ESP32 | `[R] Reboot` |
 
 
 Setup requires holding G0 for 1.2 seconds; ordinary letter keys never open settings.
 The display always uses its fixed upright orientation. `8` and `F` have no action.
-Shifted bracket shortcuts (`{` / `}`) also seek backward / forward.
+Bracket keys (`[` / `]`) skip tracks; comma and period (`,` / `.`) seek.
+Shifted forms perform the same action. `P` and `N` have no action.
 
 Firmware is compiled locally with PlatformIO. Both targets pin Espressif32 6.9.0
 (Arduino ESP32 2.0.17), including the ESP-IDF WebSocket client used by the bridge.

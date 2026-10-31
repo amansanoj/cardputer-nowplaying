@@ -403,11 +403,11 @@ void DisplayUI::drawPlaybackFooter(const String &state, char activeKey) {
   bool isPlaying = (state == "playing");
   FooterControl controls[5];
 
-  controls[0] = { "Prev", "P", ICON_PREV, (activeKey == 'p' || activeKey == 'P') };
-  controls[1] = { "-10s", "<", ICON_REWIND, (activeKey == ',' || activeKey == '<' || activeKey == '[' || activeKey == '{') };
+  controls[0] = { "Prev", "[", ICON_PREV, (activeKey == '[' || activeKey == '{') };
+  controls[1] = { "-10s", "<", ICON_REWIND, (activeKey == ',' || activeKey == '<') };
   controls[2] = { isPlaying ? "Pause" : "Play", "Spc", isPlaying ? ICON_PAUSE : ICON_PLAY, (activeKey == ' ') };
-  controls[3] = { "+10s", ">", ICON_FORWARD, (activeKey == '.' || activeKey == '>' || activeKey == ']' || activeKey == '}') };
-  controls[4] = { "Next", "N", ICON_NEXT, (activeKey == 'n' || activeKey == 'N') };
+  controls[3] = { "+10s", ">", ICON_FORWARD, (activeKey == '.' || activeKey == '>') };
+  controls[4] = { "Next", "]", ICON_NEXT, (activeKey == ']' || activeKey == '}') };
 
   drawFooter(controls, 5);
 }

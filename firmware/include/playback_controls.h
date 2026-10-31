@@ -3,10 +3,10 @@
 inline const char* playbackCommand(char key) {
   switch (key) {
     case ' ': return "toggle";
-    case 'p': case 'P': return "previous";
-    case 'n': case 'N': return "next";
-    case ',': case '<': case '[': case '{': return "backward";
-    case '.': case '>': case ']': case '}': return "forward";
+    case '[': case '{': return "previous";
+    case ']': case '}': return "next";
+    case ',': case '<': return "backward";
+    case '.': case '>': return "forward";
     default: return nullptr;
   }
 }
