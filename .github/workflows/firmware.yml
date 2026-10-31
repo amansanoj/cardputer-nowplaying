@@ -22,7 +22,16 @@ jobs:
         run: python host-companion/test_bridge.py
       - name: Build both targets
         working-directory: firmware
-        run: pio run -j 2
+        shell: bash
+        run: |
+          set -o pipefail
+          pio run -j 2 2>&1 | tee /tmp/firmware-build.log
+      - name: Report compiler output
+        if: always()
+        run: |
+          echo '```text' >> "$GITHUB_STEP_SUMMARY"
+          tail -100 /tmp/firmware-build.log >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
       - name: Prepare firmware binaries
         run: |
           mkdir -p artifacts
