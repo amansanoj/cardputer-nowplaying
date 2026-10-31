@@ -50,7 +50,7 @@ void setup() {
   delay(200);
 
   Serial.println("==================================================");
-  Serial.println(" Cardputer Now Playing Display (v4.0.0)");
+  Serial.println(" Cardputer Now Playing Display (v5.0.2)");
   Serial.println("==================================================");
 
   // Initialize double-buffered ST7789 display
